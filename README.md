@@ -1,5 +1,7 @@
 # Fido
 
+There was a lack of MUD server examples in Odin on github, so here's one.
+
 This is an experimental server in Odin using non-blocking IO (nbio) and separate threads for the network and the simulation itself.
 
 The goal of this project is to explore architecture for text-based multiplayer games.
