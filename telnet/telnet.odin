@@ -19,9 +19,9 @@ Telnet :: struct($T: typeid) {
 	ev:        proc(user_data: T, event: Event) -> bool,
 	// State machine state
 	state:     Telnet_State,
-	// the following three fields are for subnegotiations
-	// buffer pos
+	// subnegotiated data buffer position
 	buf_pos:   int,
+	// subnegotiated data telopt
 	sb_telopt: byte,
 	// buffer for subnegotiated data
 	buf:       []byte,
