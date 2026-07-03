@@ -6,7 +6,6 @@ import "core:container/xar"
 import "core:fmt"
 import "core:mem"
 import "core:nbio"
-import "core:slice"
 import "core:sync"
 import "core:sync/chan"
 import "core:thread"
@@ -17,7 +16,7 @@ KB :: 1024
 GAME_TICK_RATE :: time.Millisecond * 100
 MAX_CONNECTIONS :: 255
 // Leaky Bucket rate limiting constants in bytes
-BUCKET_MAX :: 4096
+BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
 
 Server :: struct {
@@ -26,6 +25,7 @@ Server :: struct {
 	connection_pool: xar.Array(Connection, 4),
 	connections:     [dynamic]^Connection,
 	free_list:       queue.Queue(^Connection),
+	loop:            ^nbio.Event_Loop,
 	is_running:      bool,
 	// 1MB is set aside to move inputs from the network thread to the main thread.
 	// If this 1mb is exhausted it will cause the thread to block until available
@@ -38,11 +38,13 @@ Connection :: struct {
 	socket:        nbio.TCP_Socket,
 	// generation is a guard to make sure output is for this socket
 	gen:           u32,
+	// Rate limit bucket. Fills with bytes received and drains every tick.
 	bucket:        u16,
 	id:            u8,
 	is_terminated: bool,
 	// data streamed in from the socket
 	incoming:      [1024]byte,
+	line_buf:      [dynamic; 1024]byte,
 	// buffer from subnegotiated data
 	buf:           [4096]byte,
 	outgoing:      [4096]byte,
@@ -60,6 +62,7 @@ NetworkEvent :: struct {
 	payload:    string,
 	gen:        u32,
 	type:       NetworkEventType,
+	// pointer to backing block to return to the return channel
 	block:      ^[1024]byte,
 }
 
@@ -167,6 +170,7 @@ io_thread_proc :: proc() {
 		socket     = socket,
 		is_running = true,
 		blocks     = blocks,
+		loop       = nbio.current_thread_event_loop(),
 	}
 	queue.init(&server.free_list, 16)
 
@@ -231,7 +235,7 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 		socket = op.accept.client,
 	}
 
-	telnet.init(&connection.telnet_data, connection.buf[:], telnet_recv)
+	telnet.init(&connection.telnet_data, connection, connection.buf[:], telnet_recv)
 
 	append(&server.connections, connection)
 	chan.send(input_channel, NetworkEvent{type = .Connect})
@@ -248,30 +252,19 @@ on_recv :: proc(op: ^nbio.Operation, conn: ^Connection) {
 		return
 	}
 
-	if conn.bucket + u16(bytes_received) > BUCKET_MAX {
+	if conn.bucket > BUCKET_CAP {
 		fmt.println("Kicking connection for DDOS protection")
 		close(conn)
 		return
 	}
 
-	block, ok := chan.recv(return_channel)
-
+	ok := telnet.process(&conn.telnet_data, conn.incoming[:op.recv.received])
+	// On failure for any reason, kick connection
 	if !ok {
-		assert(ok, "Block could not be retrieved from return")
 		close(conn)
 		return
 	}
-	copy(block[:], conn.incoming[:bytes_received])
 
-	event := NetworkEvent {
-		type       = .Command,
-		loop       = op.l,
-		connection = conn,
-		gen        = conn.gen,
-		payload    = string(block[:bytes_received]),
-		block      = block,
-	}
-	chan.send(input_channel, event)
 	conn.bucket += u16(bytes_received)
 	// continue to receive in a loop
 	nbio.recv_poly(conn.socket, {conn.incoming[:]}, conn, on_recv)
@@ -284,33 +277,60 @@ on_sent :: proc(op: ^nbio.Operation, conn: ^Connection) {
 
 close :: proc(conn: ^Connection) {
 	conn.is_terminated = true
-	// incrementing the gen will prevent mis-matched output from getting sent
+	// incrementing gen will guarantee mis-matched output isn't sent to the
+	// wrong socket
 	conn.gen += 1
-	last := slice.last(conn.server.connections[:])
+	last := conn.server.connections[len(conn.server.connections) - 1]
+	// swap and pop
 	last.id = conn.id
 	unordered_remove(&conn.server.connections, conn.id)
 	queue.push_back(&conn.server.free_list, conn)
 	nbio.close(conn.socket)
 }
 
-telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) {
+telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 	switch val in ev {
 	case telnet.Telnet_Ev_Text:
-		// get a recycled block from the game thread as a backing block for user
-		// input.
-		// Block the thread until memory is ready.
-		block, ok := chan.recv(return_channel)
+		for x in val.data {
+			// if buffer overflow, fail!
+			if len(conn.line_buf) > cap(conn.line_buf) {
+				return false
+			}
 
-		if !ok {
-			assert(ok, "Block could not be retrieved from return")
-			close(conn)
-			return
+			append(&conn.line_buf, x)
+
+			// keeping appending up to newline
+			if x != '\n' do continue
+
+			// If byte is eol..
+			// get a recycled block from the game thread as a backing block for user
+			// input.
+			// Block the thread until memory is ready.
+			block, ok := chan.recv(return_channel)
+
+			if !ok {
+				assert(ok, "Block could not be retrieved from return")
+				close(conn)
+				return false
+			}
+			copy(block[:], conn.line_buf[:])
+			event := NetworkEvent {
+				type       = .Command,
+				loop       = conn.server.loop,
+				connection = conn,
+				gen        = conn.gen,
+				payload    = string(block[:]),
+				block      = block,
+			}
+			chan.send(input_channel, event)
+			clear(&conn.line_buf)
 		}
 
-		copy(block[:], val.data)
 
 	case telnet.Telnet_Ev_Negotiate:
 	case telnet.Telnet_Ev_Subnegotiate:
-	case telnet.Telnet_Ev_IAC:
+	case telnet.Telnet_Ev_Iac:
 	}
+
+	return true
 }
