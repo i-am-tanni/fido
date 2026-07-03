@@ -12,7 +12,6 @@ import "core:thread"
 import "core:time"
 import "telnet"
 
-KB :: 1024
 GAME_TICK_RATE :: time.Millisecond * 100
 MAX_CONNECTIONS :: 255
 // Leaky Bucket rate limiting constants in bytes
