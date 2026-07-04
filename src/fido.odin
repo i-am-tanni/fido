@@ -73,11 +73,6 @@ UserOutput :: struct {
 	msg:            []byte,
 }
 
-InputAlloc :: struct {
-	mutex: sync.Mutex,
-	mem:   mem.Arena,
-}
-
 //
 // Channels
 //
@@ -287,6 +282,7 @@ close :: proc(conn: ^Connection) {
 	nbio.close(conn.socket)
 }
 
+// Event handler for processed telnet events
 telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 	switch val in ev {
 	case telnet.Telnet_Ev_Text:

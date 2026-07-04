@@ -1,3 +1,5 @@
+// This is a telnet parsing library
+// mostly ported wholesale from libtelnet by Sean Middleditch
 package telnet
 
 import "core:fmt"
@@ -13,17 +15,18 @@ TELNET_SE :: 240
 TELNET_EOR :: 239
 
 Telnet :: struct($T: typeid) {
-	// Connection data
+	// User data
 	ud:        T,
-	// event handler
+	// Event handler
 	ev:        proc(user_data: T, event: Event) -> bool,
 	// State machine state
 	state:     Telnet_State,
-	// subnegotiated data buffer position
+	// Subnegotiated data buffer position
 	buf_pos:   int,
-	// subnegotiated data telopt
+	// Subnegotiated data telopt
 	sb_telopt: byte,
-	// buffer for subnegotiated data
+	// Subnegotiated data is buffered until an IAC SE is reached
+	// Or the buffer overflows
 	buf:       []byte,
 }
 
