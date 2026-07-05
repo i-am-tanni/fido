@@ -171,8 +171,8 @@ io_thread_proc :: proc() {
 	nbio.accept_poly(socket, &server, on_accept)
 	last_game_tick := time.now()
 	for server.is_running {
-		tick_err := nbio.tick(1 * time.Second)
-
+		err := nbio.tick(1 * time.Second)
+		fmt.assertf(err == nil, "nbio.tick error: %v", err)
 		// Step 1: Leaky bucket rate limiting drains for each connection.
 		//
 		if elapsed := time.since(last_game_tick); elapsed >= GAME_TICK_RATE {
@@ -183,7 +183,7 @@ io_thread_proc :: proc() {
 			}
 			last_game_tick = time.now()
 		}
-		// Step 2: Send any outputs available
+		// Step 2: For each output ready and able to send to a socket, do so
 		//
 		for {
 			output := chan.try_recv(output_channel) or_break
@@ -197,7 +197,6 @@ io_thread_proc :: proc() {
 			}
 			nbio.send_poly(output.connection.socket, {output.msg}, output.connection, on_sent)
 		}
-		fmt.assertf(lerr == nil, "[IO Thread] Tick error: %v", tick_err)
 	}
 }
 
