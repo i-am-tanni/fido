@@ -8,7 +8,7 @@ import "core:nbio"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
-import "telnet"
+import "lib/telnet"
 
 GAME_TICK_RATE :: time.Millisecond * 100
 MAX_CONNECTIONS :: 255
@@ -93,7 +93,7 @@ main :: proc() {
 	fmt.assertf(err == nil, "Could not initialize nbio: %v", err)
 	defer chan.destroy(output_channel)
 
-	thread.create_and_start(io_thread_proc)
+	thread.create_and_start(network_thread_proc)
 	thread.create_and_start(game_thread_proc)
 
 	// after set up, sleep effectively forever
@@ -117,7 +117,7 @@ game_thread_proc :: proc() {
 						msg = transmute([]byte)(event.payload[:]),
 					},
 				)
-				// tell the io_thread to wake up and process the output right away
+				// wake up the network thread so that output is processed right away
 				nbio.wake_up(event.loop)
 
 			case .Connect:
@@ -140,7 +140,7 @@ game_thread_proc :: proc() {
 	}
 }
 
-io_thread_proc :: proc() {
+network_thread_proc :: proc() {
 	fmt.println("IO Thread Started")
 	server: Server
 	// backing block for network events sent to the game loop
@@ -301,17 +301,18 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 			block, ok := chan.recv(return_channel)
 
 			if !ok {
-				assert(ok, "Block could not be retrieved from return")
+				assert(ok, "Block could not be retrieved from return channel!")
 				close(conn)
 				return false
 			}
-			copy(block[:], conn.line_buf[:])
+			bytes_to_copy := min(len(conn.line_buf), len(block))
+			copy(block[:bytes_to_copy], conn.line_buf[:bytes_to_copy])
 			event := NetworkEvent {
 				type       = .Command,
 				loop       = conn.server.loop,
 				connection = conn,
 				gen        = conn.gen,
-				payload    = string(block[:]),
+				payload    = string(block[:bytes_to_copy]),
 				block      = block,
 			}
 			chan.send(input_channel, event)

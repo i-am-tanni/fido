@@ -79,13 +79,13 @@ Event :: union #no_nil {
 
 init :: proc(
 	telnet: ^Telnet($T),
-	ud: T,
-	buf: []byte,
-	ev: proc(user_data: T, event: Event) -> bool,
+	user_data: T,
+	buffer: []byte,
+	event_handler: proc(user_data: T, event: Event) -> bool,
 ) {
-	telnet.ev = ev
-	telnet.ud = ud
-	telnet.buf = buf
+	telnet.ud = user_data
+	telnet.buf = buffer
+	telnet.ev = event_handler
 }
 
 process :: proc(telnet: ^Telnet($T), bytes: []byte) -> bool {
