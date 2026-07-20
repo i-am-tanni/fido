@@ -46,15 +46,22 @@ packed_get_ptr :: proc(packed: ^PackedArray($T), id: Id) -> (slot: ^T, is_ok: bo
 	return &packed.slots[idx].data, true
 }
 
-packed_try_insert :: proc(packed: ^PackedArray($T), id: Id, data: T) -> (slot: ^T, is_ok: bool) {
+packed_try_insert :: proc(
+	packed: ^PackedArray($T),
+	id: Id,
+	data: T,
+) -> (
+	slot: ^DenseSlot(T),
+	is_ok: bool,
+) {
 	if id == 0 do return nil, false
 	if len(packed.idx) <= int(id) {
 		resize(&packed.idx, int(id) + 1)
 	}
 	index := len(packed.slots)
 	packed.idx[id] = u32(index)
-	append(&packed.slots, DenseSlot(id = id, data = data))
-	return packed.idx[id], slot != nil
+	append(&packed.slots, DenseSlot(T){id = id, data = data})
+	return &packed.slots[index], slot != nil
 }
 
 packed_remove :: proc(packed: ^PackedArray($T), removed_id: Id) {

@@ -78,7 +78,7 @@ entity_new :: proc(model: ^Model, id: lib.Id) -> Ref {
 		ptr.ref.generation += 1
 	}
 
-	return ptr.ref
+	return ptr.data.ref
 }
 
 entity_rmv_soft :: proc(model: ^Model, ref: Ref) -> bool {
