@@ -1,6 +1,19 @@
-package lib
+package fido
 
 import "base:runtime"
+
+// A Sparse-Dense Array
+PackedArray :: struct($T: typeid) {
+	// note: index 0 is sentinel
+	// We use a reverse_idx to find the last slot id for unordered removes
+	// The reason we cannot replace reverse_idx with simply an ID is once a
+	// slot is removed, then we need to know the second to last ID, etc.
+	//
+	// Sparse Array - lookup by Id, contains the index for the dense array
+	idx:   [dynamic]u32,
+	// Dense Array - contains the data
+	slots: [dynamic]DenseSlot(T),
+}
 
 Id :: distinct u32
 
@@ -9,19 +22,10 @@ DenseSlot :: struct($T: typeid) {
 	data: T,
 }
 
-// A Sparse-Dense Array
-PackedArray :: struct($T: typeid) {
-	// note: index 0 is sentinel
-	// We use a reverse_idx to find the last slot id for unordered removes
-	// The reason we cannot replace reverse_idx with simply an ID is once a
-	// slot is removed, then we need to know the second to last ID, etc.
-	slots: [dynamic]DenseSlot(T), // Dense array - contains the data
-	idx:   [dynamic]u32, // Sparse array - id to dense slot index lookup
-}
-
+// Iterator for a Sparse-Dense Array
 PackedIter :: struct($T: typeid) {
 	index: int,
-	data:  []PackedArray($T),
+	data:  []DenseSlot(T),
 }
 
 // Initiate a packed array. You must specify how big you want your dense
@@ -35,8 +39,8 @@ packed_init :: proc(
 ) {
 	// len starts at 1 for a sentinel index
 	packed^ = PackedArray(T) {
-		slots = make([dynamic]T, 1, dense_cap, allocator),
-		idx   = make([dynamic]u32, 1, max_id, allocator),
+		slots = make([dynamic]DenseSlot(T), 1, dense_cap, allocator),
+		idx   = make([dynamic]u32, max_id, allocator),
 	}
 }
 
@@ -61,7 +65,8 @@ packed_try_insert :: proc(
 	index := len(packed.slots)
 	packed.idx[id] = u32(index)
 	append(&packed.slots, DenseSlot(T){id = id, data = data})
-	return &packed.slots[index], slot != nil
+	slot = &packed.slots[index]
+	return slot, slot != nil
 }
 
 packed_remove :: proc(packed: ^PackedArray($T), removed_id: Id) {
@@ -85,15 +90,16 @@ packed_remove :: proc(packed: ^PackedArray($T), removed_id: Id) {
 	unordered_remove(&packed.slots, removed_index)
 }
 
-packed_array_to_iter :: proc(packed: []^PackedArray($T)) -> PackedIter(T) {
-	return {data = data}
+packed_array_to_iter :: proc(packed: ^PackedArray($T)) -> PackedIter(T) {
+	// ignore sentinel
+	return {index = 1, data = packed.slots[:]}
 }
 
 packed_iterator :: proc(it: ^PackedIter($T)) -> (val: DenseSlot(T), idx: int, cond: bool) {
 	cond = it.index < len(it.data)
 
 	for ; cond; cond = it.index < len(it.data) {
-		val = it.data.slots[it.index]
+		val = it.data[it.index]
 		idx = it.index
 		it.index += 1
 	}

@@ -5,6 +5,7 @@ import "core:container/queue"
 import "core:container/xar"
 import "core:fmt"
 import "core:nbio"
+import "core:strings"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
@@ -15,13 +16,14 @@ MAX_CONNECTIONS :: 255
 // Leaky Bucket rate limiting constants in bytes
 BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
+KB :: 1024
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
 	// Pool is used for stable pointers
 	connection_pool: xar.Array(Connection, 4),
 	connections:     [dynamic]^Connection,
-	free_list:       queue.Queue(^Connection),
+	free_list:       queue.Queue(u8),
 	loop:            ^nbio.Event_Loop,
 	is_running:      bool,
 	// 1MB is set aside to move inputs from the network thread to the main thread.
@@ -33,6 +35,7 @@ Connection :: struct {
 	server:        ^Server,
 	telnet_data:   telnet.Telnet(^Connection),
 	socket:        nbio.TCP_Socket,
+	game_ref:      Ref,
 	// generation is a guard to make sure output is for this socket
 	gen:           u32,
 	// Rate limit bucket. Fills with bytes received and drains every tick.
@@ -53,22 +56,44 @@ NetworkEventType :: enum {
 	Command,
 }
 
+ConnRef :: struct {
+	id:  u32,
+	gen: u32,
+}
+
 NetworkEvent :: struct {
-	loop:       ^nbio.Event_Loop,
-	connection: ^Connection,
-	payload:    string,
-	gen:        u32,
-	type:       NetworkEventType,
+	loop:     ^nbio.Event_Loop,
+	payload:  string,
+	// id and generation of the connection
+	conn_ref: ConnRef,
+	// a signal from the game loop to terminate the connection
+	game_ref: Ref,
+	type:     NetworkEventType,
 	// pointer to backing block to return to the return channel
-	block:      ^[1024]byte,
+	block:    ^[1024]byte,
 }
 
 UserOutput :: struct {
-	// generation is a guard to make sure output is for this socket
-	gen:            u32,
-	connection:     ^Connection,
+	id:             u64,
+	// id and generation of the connection
+	conn_ref:       ConnRef,
+	// id and generation of the entity / instance of this character in game
+	game_ref:       Ref,
+	// a signal from the game loop to terminate the connection
 	is_terminating: bool,
-	msg:            []byte,
+	// the payload from the server to the socket
+	msg:            string,
+}
+
+// unlike the standard odin arena, will wrap around when full
+// instead of panicking or growing
+// This is needed b/c the network loop may be still working on the output
+// when the next game loop begins and the temp allocator is cleared.
+// As long as the buffer is not exhausted in 100ms, there are no issues :)
+RollingArena :: struct {
+	len: int,
+	cap: int,
+	buf: [50000 * KB]u8,
 }
 
 //
@@ -82,15 +107,15 @@ output_channel: chan.Chan(UserOutput)
 main :: proc() {
 	err: runtime.Allocator_Error
 	input_channel, err = chan.create(chan.Chan(NetworkEvent), 1024, context.allocator)
-	fmt.assertf(err == nil, "Could not initialize nbio: %v", err)
+	fmt.assertf(err == nil, "Could not initialize input channel: %v", err)
 	defer chan.destroy(input_channel)
 
 	return_channel, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
-	fmt.assertf(err == nil, "Could not initialize nbio: %v", err)
+	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(return_channel)
 
 	output_channel, err = chan.create(chan.Chan(UserOutput), 1024, context.allocator)
-	fmt.assertf(err == nil, "Could not initialize nbio: %v", err)
+	fmt.assertf(err == nil, "Could not initialize output channel: %v", err)
 	defer chan.destroy(output_channel)
 
 	thread.create_and_start(network_thread_proc)
@@ -102,33 +127,58 @@ main :: proc() {
 
 game_thread_proc :: proc() {
 	fmt.println("Game Thread Started")
+	scratchpad := new(RollingArena)
+	model := new(Model)
+	model_init(model)
+
 	for {
 		start := time.now()
-		event, ok := chan.try_recv(input_channel)
-
-		if ok {
+		for {
+			event := chan.try_recv(input_channel) or_break
+			free_all(context.temp_allocator)
 			switch event.type {
 			case .Command:
+				parsed, ok := parse_command(event.payload)
+				output, output_ok := dispatch_cmd(model, event.game_ref, parsed)
+				output = arena_append(scratchpad, output)
+				// wake up the network thread so that output is processed right away
 				chan.send(
 					output_channel,
 					UserOutput {
-						connection = event.connection,
-						gen = event.gen,
-						msg = transmute([]byte)(event.payload[:]),
+						id = 32,
+						msg = output,
+						game_ref = event.game_ref,
+						conn_ref = event.conn_ref,
 					},
 				)
-				// wake up the network thread so that output is processed right away
 				nbio.wake_up(event.loop)
 
 			case .Connect:
 				fmt.println("Connected!")
+				// get game ref
+				ref := player_new(model, Player{conn_ref = event.conn_ref})
+
+				// move to room 1
+				child_prepend(model, Ref{1, 0}, ref)
+
+				output, ok := do_look(model, ref)
+				output = arena_append(scratchpad, output)
+				// and provide it to the NetworkLoop
+				chan.send(
+					output_channel,
+					UserOutput{id = 32, msg = output, game_ref = ref, conn_ref = event.conn_ref},
+				)
+				nbio.wake_up(event.loop)
+
 
 			case .Disconnect:
 				fmt.println("Disconnected!")
+				entity_rmv_soft(model, event.game_ref)
 			}
 
+
 			if event.block != nil {
-				// return block to be reused
+				// return block to be reused if one was used
 				chan.send(return_channel, event.block)
 			}
 		}
@@ -185,15 +235,27 @@ network_thread_proc :: proc() {
 		//
 		for {
 			output := chan.try_recv(output_channel) or_break
+			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
+			if connection == nil do continue
 			// Ensure the output belongs to this socket...
-			if output.gen != output.connection.gen do continue
-			// ..and that the socket is not terminated or terminating..
-			if output.connection.is_terminated do continue
-			if output.is_terminating {
-				close(output.connection)
-				continue
+			if output.conn_ref.gen != connection.gen do continue
+			// ..and that the socket is not terminated already..
+			if connection.is_terminated do continue
+			if len(output.msg) > 0 {
+				nbio.send_poly(
+					connection.socket,
+					{transmute([]byte)output.msg},
+					connection,
+					on_sent,
+				)
 			}
-			nbio.send_poly(output.connection.socket, {output.msg}, output.connection, on_sent)
+			// if game_ref is empty, update
+			if connection.game_ref.id == 0 {
+				connection.game_ref = output.game_ref
+			}
+			if output.is_terminating {
+				close(connection)
+			}
 		}
 	}
 }
@@ -207,11 +269,18 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	}
 
 	nbio.accept_poly(server.socket, server, on_accept)
+	id: u8
 	// try the freed connections queue first.
-	connection, ok := queue.pop_front_safe(&server.free_list)
+	index, ok := queue.pop_front_safe(&server.free_list)
+	connection: ^Connection
+	if ok {
+		connection = xar.get_ptr(&server.connection_pool, index)
+		id = index
+	}
 	// .. and if that fails, get one from the xar connection pool
 	if !ok {
 		alloc_err: runtime.Allocator_Error
+		id = u8(xar.array_len(server.connection_pool))
 		connection, alloc_err = xar.push_back_elem_and_get_ptr(
 			&server.connection_pool,
 			Connection{},
@@ -220,7 +289,7 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	}
 
 	connection^ = Connection {
-		id     = u8(len(&server.connections)),
+		id     = id,
 		gen    = connection.gen,
 		server = server,
 		socket = op.accept.client,
@@ -229,7 +298,15 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	telnet.init(&connection.telnet_data, connection, connection.buf[:], telnet_recv)
 
 	append(&server.connections, connection)
-	chan.send(input_channel, NetworkEvent{type = .Connect})
+	connection_event := NetworkEvent {
+		type     = .Connect,
+		conn_ref = ConnRef{u32(id), connection.gen},
+		loop     = server.loop,
+		payload  = "",
+		game_ref = Ref{},
+		block    = nil,
+	}
+	chan.send(input_channel, connection_event)
 	nbio.recv_poly(op.accept.client, {connection.incoming[:]}, connection, on_recv)
 }
 
@@ -275,7 +352,7 @@ close :: proc(conn: ^Connection) {
 	// swap and pop
 	last.id = conn.id
 	unordered_remove(&conn.server.connections, conn.id)
-	queue.push_back(&conn.server.free_list, conn)
+	queue.push_back(&conn.server.free_list, conn.id)
 	nbio.close(conn.socket)
 }
 
@@ -308,12 +385,12 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 			bytes_to_copy := min(len(conn.line_buf), len(block))
 			copy(block[:bytes_to_copy], conn.line_buf[:bytes_to_copy])
 			event := NetworkEvent {
-				type       = .Command,
-				loop       = conn.server.loop,
-				connection = conn,
-				gen        = conn.gen,
-				payload    = string(block[:bytes_to_copy]),
-				block      = block,
+				type = .Command,
+				loop = conn.server.loop,
+				conn_ref = ConnRef{id = u32(conn.id), gen = conn.gen},
+				game_ref = conn.game_ref,
+				payload = string(block[:bytes_to_copy]),
+				block = block,
 			}
 			chan.send(input_channel, event)
 			clear(&conn.line_buf)
@@ -326,4 +403,16 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 	}
 
 	return true
+}
+
+arena_append :: proc(dest: ^RollingArena, src: string) -> string {
+	// unlike the standard odin arena will wrap around when full
+	// instead of panicking
+	if len(src) > dest.cap - dest.len {
+		dest.len = 0
+	}
+	start := dest.len
+	bytes := copy_from_string(dest.buf[start:], src)
+	dest.len += bytes
+	return string(dest.buf[start:start + bytes])
 }
