@@ -5,7 +5,6 @@ import "core:container/queue"
 import "core:container/xar"
 import "core:fmt"
 import "core:nbio"
-import "core:strings"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
@@ -17,6 +16,8 @@ MAX_CONNECTIONS :: 255
 BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
 KB :: 1024
+BLOCK_OUT_SIZE :: 256
+BLOCK_IN_SIZE :: 1024
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
@@ -28,7 +29,7 @@ Server :: struct {
 	is_running:      bool,
 	// 1MB is set aside to move inputs from the network thread to the main thread.
 	// If this 1mb is exhausted it will cause the thread to block until available
-	blocks:          ^[1024][1024]byte,
+	blocks:          ^[1024][BLOCK_IN_SIZE]byte,
 }
 
 Connection :: struct {
@@ -70,7 +71,7 @@ NetworkEvent :: struct {
 	game_ref: Ref,
 	type:     NetworkEventType,
 	// pointer to backing block to return to the input return channel
-	block:    ^[1024]byte,
+	block:    ^[BLOCK_IN_SIZE]byte,
 }
 
 UserOutput :: struct {
@@ -84,7 +85,7 @@ UserOutput :: struct {
 	// the payload from the server to the socket
 	msg:            string,
 	// pointer to backing block to return to the output return channel
-	block:          ^[256]byte,
+	block:          ^[BLOCK_OUT_SIZE]byte,
 }
 
 //
@@ -92,9 +93,9 @@ UserOutput :: struct {
 //
 input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
-blocks_in: chan.Chan(^[1024]byte)
+blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
-blocks_out: chan.Chan(^[256]byte)
+blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
 output_channel: chan.Chan(UserOutput)
 
 main :: proc() {
@@ -103,15 +104,15 @@ main :: proc() {
 	fmt.assertf(err == nil, "Could not initialize input channel: %v", err)
 	defer chan.destroy(input_channel)
 
-	blocks_in, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
+	blocks_in, err = chan.create(chan.Chan(^[BLOCK_IN_SIZE]byte), 1024, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
-	blocks_out, err = chan.create(chan.Chan(^[256]byte), 20_480_000, context.allocator)
+	blocks_out, err = chan.create(chan.Chan(^[BLOCK_OUT_SIZE]byte), 80_000, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
-	output_channel, err = chan.create(chan.Chan(UserOutput), 1024, context.allocator)
+	output_channel, err = chan.create(chan.Chan(UserOutput), 80_000, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize output channel: %v", err)
 	defer chan.destroy(output_channel)
 
@@ -126,7 +127,7 @@ game_thread_proc :: proc() {
 	fmt.println("Game Thread Started")
 	model := new(Model)
 	model_init(model)
-	blocks := new([80_000][256]byte)
+	blocks := new([80_000][BLOCK_OUT_SIZE]byte)
 	// fill output block channel with available blocks
 	for &block in blocks {
 		chan.send(blocks_out, &block)
@@ -180,7 +181,7 @@ network_thread_proc :: proc() {
 	fmt.println("IO Thread Started")
 	server: Server
 	// backing block for network events sent to the game loop
-	blocks := new([1024][1024]byte)
+	blocks := new([1024][BLOCK_IN_SIZE]byte)
 	defer free(blocks)
 
 	// fill input channel with all available blocks
@@ -396,15 +397,13 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 
 // stuff the output channel
 output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
-	pos := 0
 	len := len(str)
-	i := 0
+	bytes := 0
 	// stuff into the string into 256 byte blocks
-	for pos < len {
+	for pos := 0; pos < len; pos += bytes {
 		block, ok := chan.recv(blocks_out)
 		assert(ok == true, "Output block could not be retrieved from return channel!")
-		left := len - pos
-		bytes := min(left, 256)
+		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		copy(block[:bytes], str[pos:pos + bytes])
 		chan.send(
 			output_channel,
@@ -416,6 +415,5 @@ output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 				block = block,
 			},
 		)
-		pos += bytes
 	}
 }
