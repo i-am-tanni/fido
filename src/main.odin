@@ -69,7 +69,7 @@ NetworkEvent :: struct {
 	// a signal from the game loop to terminate the connection
 	game_ref: Ref,
 	type:     NetworkEventType,
-	// pointer to backing block to return to the return channel
+	// pointer to backing block to return to the input return channel
 	block:    ^[1024]byte,
 }
 
@@ -83,17 +83,8 @@ UserOutput :: struct {
 	is_terminating: bool,
 	// the payload from the server to the socket
 	msg:            string,
-}
-
-// unlike the standard odin arena, will wrap around when full
-// instead of panicking or growing
-// This is needed b/c the network loop may be still working on the output
-// when the next game loop begins and the temp allocator is cleared.
-// As long as the buffer is not exhausted in 100ms, there are no issues :)
-RollingArena :: struct {
-	len: int,
-	cap: int,
-	buf: [50000 * KB]u8,
+	// pointer to backing block to return to the output return channel
+	block:          ^[256]byte,
 }
 
 //
@@ -101,7 +92,8 @@ RollingArena :: struct {
 //
 input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
-return_channel: chan.Chan(^[1024]byte)
+input_block_channel: chan.Chan(^[1024]byte)
+output_block_channel: chan.Chan(^[256]byte)
 output_channel: chan.Chan(UserOutput)
 
 main :: proc() {
@@ -110,9 +102,13 @@ main :: proc() {
 	fmt.assertf(err == nil, "Could not initialize input channel: %v", err)
 	defer chan.destroy(input_channel)
 
-	return_channel, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
+	input_block_channel, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
-	defer chan.destroy(return_channel)
+	defer chan.destroy(input_block_channel)
+
+	output_block_channel, err = chan.create(chan.Chan(^[256]byte), 20_480_000, context.allocator)
+	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
+	defer chan.destroy(input_block_channel)
 
 	output_channel, err = chan.create(chan.Chan(UserOutput), 1024, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize output channel: %v", err)
@@ -127,9 +123,13 @@ main :: proc() {
 
 game_thread_proc :: proc() {
 	fmt.println("Game Thread Started")
-	scratchpad := new(RollingArena)
 	model := new(Model)
 	model_init(model)
+	blocks := new([80_000][256]byte)
+	// fill output block channel with available blocks
+	for &block in blocks {
+		chan.send(output_block_channel, &block)
+	}
 
 	for {
 		start := time.now()
@@ -139,18 +139,8 @@ game_thread_proc :: proc() {
 			switch event.type {
 			case .Command:
 				parsed, ok := parse_command(event.payload)
-				output, output_ok := dispatch_cmd(model, event.game_ref, parsed)
-				output = arena_append(scratchpad, output)
-				// wake up the network thread so that output is processed right away
-				chan.send(
-					output_channel,
-					UserOutput {
-						id = 32,
-						msg = output,
-						game_ref = event.game_ref,
-						conn_ref = event.conn_ref,
-					},
-				)
+				text, text_ok := dispatch_cmd(model, event.game_ref, parsed)
+				output(text, event.game_ref, event.conn_ref)
 				nbio.wake_up(event.loop)
 
 			case .Connect:
@@ -161,13 +151,8 @@ game_thread_proc :: proc() {
 				// move to room 1
 				child_prepend(model, Ref{1, 0}, ref)
 
-				output, ok := do_look(model, ref)
-				output = arena_append(scratchpad, output)
-				// and provide it to the NetworkLoop
-				chan.send(
-					output_channel,
-					UserOutput{id = 32, msg = output, game_ref = ref, conn_ref = event.conn_ref},
-				)
+				text, ok := do_look(model, ref)
+				output(text, ref, event.conn_ref)
 				nbio.wake_up(event.loop)
 
 
@@ -179,7 +164,7 @@ game_thread_proc :: proc() {
 
 			if event.block != nil {
 				// return block to be reused if one was used
-				chan.send(return_channel, event.block)
+				chan.send(input_block_channel, event.block)
 			}
 		}
 
@@ -197,9 +182,9 @@ network_thread_proc :: proc() {
 	blocks := new([1024][1024]byte)
 	defer free(blocks)
 
-	// fill return channel with all available blocks
+	// fill input channel with all available blocks
 	for &block in blocks {
-		chan.send(return_channel, &block)
+		chan.send(input_block_channel, &block)
 	}
 	lerr := nbio.acquire_thread_event_loop()
 	defer nbio.release_thread_event_loop()
@@ -255,6 +240,9 @@ network_thread_proc :: proc() {
 			}
 			if output.is_terminating {
 				close(connection)
+			}
+			if output.block != nil {
+				chan.send(output_block_channel, output.block)
 			}
 		}
 	}
@@ -375,10 +363,10 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 			// get a recycled block from the game thread as a backing block for user
 			// input.
 			// Block the thread until memory is ready.
-			block, ok := chan.recv(return_channel)
+			block, ok := chan.recv(input_block_channel)
 
 			if !ok {
-				assert(ok, "Block could not be retrieved from return channel!")
+				assert(ok, "Input block could not be retrieved from return channel!")
 				close(conn)
 				return false
 			}
@@ -405,14 +393,26 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 	return true
 }
 
-arena_append :: proc(dest: ^RollingArena, src: string) -> string {
-	// unlike the standard odin arena will wrap around when full
-	// instead of panicking
-	if len(src) > dest.cap - dest.len {
-		dest.len = 0
+output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
+	pos := 0
+	len := len(str)
+	i := 0
+	for pos < len {
+		block, ok := chan.recv(output_block_channel)
+		assert(ok == true, "Output block could not be retrieved from return channel!")
+		left := len - pos
+		bytes := min(left, 256)
+		copy(block[:bytes], str[pos:pos + bytes])
+		chan.send(
+			output_channel,
+			UserOutput {
+				id = 32,
+				msg = string(block[:bytes]),
+				game_ref = game_ref,
+				conn_ref = conn_ref,
+				block = block,
+			},
+		)
+		pos += bytes
 	}
-	start := dest.len
-	bytes := copy_from_string(dest.buf[start:], src)
-	dest.len += bytes
-	return string(dest.buf[start:start + bytes])
 }
