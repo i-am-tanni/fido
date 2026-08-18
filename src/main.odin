@@ -92,8 +92,9 @@ UserOutput :: struct {
 //
 input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
-input_block_channel: chan.Chan(^[1024]byte)
-output_block_channel: chan.Chan(^[256]byte)
+blocks_in: chan.Chan(^[1024]byte)
+// channel for obtaining recycled output blocks that back UserOutput
+blocks_out: chan.Chan(^[256]byte)
 output_channel: chan.Chan(UserOutput)
 
 main :: proc() {
@@ -102,13 +103,13 @@ main :: proc() {
 	fmt.assertf(err == nil, "Could not initialize input channel: %v", err)
 	defer chan.destroy(input_channel)
 
-	input_block_channel, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
+	blocks_in, err = chan.create(chan.Chan(^[1024]byte), 1024, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
-	defer chan.destroy(input_block_channel)
+	defer chan.destroy(blocks_in)
 
-	output_block_channel, err = chan.create(chan.Chan(^[256]byte), 20_480_000, context.allocator)
+	blocks_out, err = chan.create(chan.Chan(^[256]byte), 20_480_000, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
-	defer chan.destroy(input_block_channel)
+	defer chan.destroy(blocks_in)
 
 	output_channel, err = chan.create(chan.Chan(UserOutput), 1024, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize output channel: %v", err)
@@ -128,7 +129,7 @@ game_thread_proc :: proc() {
 	blocks := new([80_000][256]byte)
 	// fill output block channel with available blocks
 	for &block in blocks {
-		chan.send(output_block_channel, &block)
+		chan.send(blocks_out, &block)
 	}
 
 	for {
@@ -164,7 +165,7 @@ game_thread_proc :: proc() {
 
 			if event.block != nil {
 				// return block to be reused if one was used
-				chan.send(input_block_channel, event.block)
+				chan.send(blocks_in, event.block)
 			}
 		}
 
@@ -184,7 +185,7 @@ network_thread_proc :: proc() {
 
 	// fill input channel with all available blocks
 	for &block in blocks {
-		chan.send(input_block_channel, &block)
+		chan.send(blocks_in, &block)
 	}
 	lerr := nbio.acquire_thread_event_loop()
 	defer nbio.release_thread_event_loop()
@@ -242,7 +243,7 @@ network_thread_proc :: proc() {
 				close(connection)
 			}
 			if output.block != nil {
-				chan.send(output_block_channel, output.block)
+				chan.send(blocks_out, output.block)
 			}
 		}
 	}
@@ -363,7 +364,7 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 			// get a recycled block from the game thread as a backing block for user
 			// input.
 			// Block the thread until memory is ready.
-			block, ok := chan.recv(input_block_channel)
+			block, ok := chan.recv(blocks_in)
 
 			if !ok {
 				assert(ok, "Input block could not be retrieved from return channel!")
@@ -393,12 +394,14 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 	return true
 }
 
+// stuff the output channel
 output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 	pos := 0
 	len := len(str)
 	i := 0
+	// stuff into the string into 256 byte blocks
 	for pos < len {
-		block, ok := chan.recv(output_block_channel)
+		block, ok := chan.recv(blocks_out)
 		assert(ok == true, "Output block could not be retrieved from return channel!")
 		left := len - pos
 		bytes := min(left, 256)
