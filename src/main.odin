@@ -16,7 +16,8 @@ MAX_CONNECTIONS :: 255
 BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
 KB :: 1024
-BLOCK_OUT_SIZE :: 256
+// Backing block sizes for moving bytes to and from the network / game loops
+BLOCK_OUT_SIZE :: 512
 BLOCK_IN_SIZE :: 1024
 
 Server :: struct {
@@ -223,11 +224,12 @@ network_thread_proc :: proc() {
 		for {
 			output := chan.try_recv(output_channel) or_break
 			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
-			if connection == nil do continue
-			// Ensure the output belongs to this socket...
-			if output.conn_ref.gen != connection.gen do continue
-			// ..and that the socket is not terminated already..
-			if connection.is_terminated do continue
+			// if conn is invalid, terminated, or the generation mismatches, continue
+			if connection == nil ||
+			   connection.is_terminated ||
+			   output.conn_ref.gen != connection.gen {
+				continue
+			}
 			if len(output.msg) > 0 {
 				nbio.send_poly(
 					connection.socket,
@@ -236,13 +238,15 @@ network_thread_proc :: proc() {
 					on_sent,
 				)
 			}
-			// if game_ref is empty, update
-			if connection.game_ref.id == 0 {
+			// If game_ref requires updating
+			if output.game_ref.id != 0 && connection.game_ref.id != output.game_ref.id {
 				connection.game_ref = output.game_ref
 			}
+			// If game thread requested termination
 			if output.is_terminating {
 				close(connection)
 			}
+			// Return used blocks
 			if output.block != nil {
 				chan.send(blocks_out, output.block)
 			}
@@ -402,7 +406,7 @@ output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 	// stuff into the string into 256 byte blocks
 	for pos := 0; pos < len; pos += bytes {
 		block, ok := chan.recv(blocks_out)
-		assert(ok == true, "Output block could not be retrieved from return channel!")
+		assert(ok, "Output block could not be retrieved from return channel!")
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		copy(block[:bytes], str[pos:pos + bytes])
 		chan.send(
