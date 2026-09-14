@@ -220,9 +220,9 @@ unload_game_api :: proc(api: ^GameAPI) {
 	}
 
 	dynlib.unload_library(api.lib)
-	del_cmd := fmt.ctprintf("rm game_{0}.dylib", api.api_version)
+	del_cmd := fmt.ctprintf("rm game{0}.dylib", api.api_version)
 	if libc.system(del_cmd) != 0 {
-		fmt.println("Failed to remove game_{0}.dylib copy", api.api_version)
+		fmt.println("Failed to remove game{0}.dylib copy", api.api_version)
 	}
 }
 

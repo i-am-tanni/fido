@@ -35,6 +35,7 @@ parse_command :: proc(raw_input: string) -> (parsed: Parsed_Input, ok: bool) {
 	parsed_cmd := str_to_command(cmd)
 	if parsed_cmd == nil do return
 	if len(split) > 1 do args = strings.trim_right(strings.trim_space(split[1]), "\r\n")
+	fmt.println("YES!!!")
 	return Parsed_Input{command = parsed_cmd, args = args}, true
 }
 
