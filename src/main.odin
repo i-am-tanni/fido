@@ -1,14 +1,18 @@
 package fido
 
 import "base:runtime"
+import "core:c/libc"
 import "core:container/queue"
 import "core:container/xar"
+import "core:dynlib"
 import "core:fmt"
 import "core:nbio"
+import "core:os"
 import "core:sync/chan"
 import "core:thread"
 import "core:time"
-import "lib/telnet"
+import "shared"
+import "telnet"
 
 GAME_TICK_RATE :: time.Millisecond * 100
 MAX_CONNECTIONS :: 255
@@ -16,9 +20,15 @@ MAX_CONNECTIONS :: 255
 BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
 KB :: 1024
-// Backing block sizes for moving bytes to and from the network / game loops
-BLOCK_OUT_SIZE :: 512
-BLOCK_IN_SIZE :: 1024
+
+// Shared types
+Ref :: shared.Ref
+ConnRef :: shared.ConnRef
+BLOCK_IN_SIZE :: shared.BLOCK_IN_SIZE
+BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
+NetworkEvent :: shared.NetworkEvent
+UserOutput :: shared.UserOutput
+NetworkEventType :: shared.NetworkEventType
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
@@ -52,43 +62,6 @@ Connection :: struct {
 	outgoing:      [4096]byte,
 }
 
-NetworkEventType :: enum {
-	Connect,
-	Disconnect,
-	Command,
-}
-
-ConnRef :: struct {
-	id:  u32,
-	gen: u32,
-}
-
-NetworkEvent :: struct {
-	loop:     ^nbio.Event_Loop,
-	payload:  string,
-	// id and generation of the connection
-	conn_ref: ConnRef,
-	// a signal from the game loop to terminate the connection
-	game_ref: Ref,
-	type:     NetworkEventType,
-	// pointer to backing block to return to the input return channel
-	block:    ^[BLOCK_IN_SIZE]byte,
-}
-
-UserOutput :: struct {
-	id:             u64,
-	// id and generation of the connection
-	conn_ref:       ConnRef,
-	// id and generation of the entity / instance of this character in game
-	game_ref:       Ref,
-	// a signal from the game loop to terminate the connection
-	is_terminating: bool,
-	// the payload from the server to the socket
-	msg:            string,
-	// pointer to backing block to return to the output return channel
-	block:          ^[BLOCK_OUT_SIZE]byte,
-}
-
 //
 // Channels
 //
@@ -98,6 +71,18 @@ blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
 blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
 output_channel: chan.Chan(UserOutput)
+
+
+GameAPI :: struct {
+	init:         proc(_: shared.Channels),
+	update:       proc() -> bool,
+	shutdown:     proc(),
+	memory:       proc() -> rawptr,
+	hot_reloaded: proc(_: rawptr, _: shared.Channels),
+	lib:          dynlib.Library,
+	dll_time:     time.Time,
+	api_version:  int,
+}
 
 main :: proc() {
 	err: runtime.Allocator_Error
@@ -125,56 +110,119 @@ main :: proc() {
 }
 
 game_thread_proc :: proc() {
+	game_api_version := 0
+	game_api, game_api_ok := load_game_api(game_api_version)
+
+	if !game_api_ok {
+		fmt.println("Failed to load game api!")
+		return
+	}
+
+	game_api_version += 1
+	channels := shared.Channels {
+		input_channel  = input_channel,
+		output_channel = output_channel,
+		blocks_in      = blocks_in,
+		blocks_out     = blocks_out,
+	}
+	game_api.init(channels)
 	fmt.println("Game Thread Started")
-	model := new(Model)
-	model_init(model)
+
 	blocks := new([80_000][BLOCK_OUT_SIZE]byte)
-	// fill output block channel with available blocks
+	// to initialize fill output block channel with available blocks
 	for &block in blocks {
 		chan.send(blocks_out, &block)
 	}
 
 	for {
 		start := time.now()
-		for {
-			event := chan.try_recv(input_channel) or_break
-			free_all(context.temp_allocator)
-			switch event.type {
-			case .Command:
-				parsed, ok := parse_command(event.payload)
-				text, text_ok := dispatch_cmd(model, event.game_ref, parsed)
-				output(text, event.game_ref, event.conn_ref)
-				nbio.wake_up(event.loop)
+		if game_api.update() == false {
+			break
+		}
 
-			case .Connect:
-				fmt.println("Connected!")
-				// get game ref
-				ref := player_new(model, Player{conn_ref = event.conn_ref})
+		dll_time, dll_time_err := os.last_write_time_by_name("game.dylib")
 
-				// move to room 1
-				child_prepend(model, Ref{1, 0}, ref)
+		reload := dll_time_err == os.ERROR_NONE && game_api.dll_time != dll_time
+		// reload if the game dll updated
+		if reload {
+			new_api, new_api_ok := load_game_api(game_api_version)
 
-				text, ok := do_look(model, ref)
-				output(text, ref, event.conn_ref)
-				nbio.wake_up(event.loop)
-
-
-			case .Disconnect:
-				fmt.println("Disconnected!")
-				entity_rmv_soft(model, event.game_ref)
+			if new_api_ok {
+				game_memory := game_api.memory()
+				unload_game_api(&game_api)
+				game_api = new_api
+				game_api.hot_reloaded(game_memory, channels)
+				game_api_version += 1
 			}
-
-
-			if event.block != nil {
-				// return block to be reused if one was used
-				chan.send(blocks_in, event.block)
-			}
+			// if we fail to load the new game api try again next pulse
 		}
 
 		// sleep for the remainder of the tick
 		if elapsed := time.diff(time.now(), start); elapsed < GAME_TICK_RATE {
 			time.sleep(GAME_TICK_RATE - elapsed)
 		}
+	}
+
+	game_api.shutdown()
+	unload_game_api(&game_api)
+}
+
+
+load_game_api :: proc(api_version: int) -> (GameAPI, bool) {
+	dll_time, dll_time_err := os.last_write_time_by_name("game.dylib")
+	if dll_time_err != os.ERROR_NONE {
+		fmt.println("Could not fetch last write date of game.dylib")
+		return {}, false
+	}
+	dll_name := fmt.tprintf("game{0}.dylib", api_version)
+	copy_cmd := fmt.ctprintf("cp game.dylib {0}", dll_name)
+	if libc.system(copy_cmd) != 0 {
+		fmt.println("Failed to copy game.dylib to {0}", dll_name)
+	}
+
+	lib, lib_ok := dynlib.load_library(dll_name)
+	if !lib_ok {
+		fmt.println("Failed to load game dll")
+	}
+	api := GameAPI {
+		init         = cast(proc(
+			_: shared.Channels,
+		))(dynlib.symbol_address(lib, "game_init") or_else nil),
+		update       = cast(proc() -> bool)(dynlib.symbol_address(lib, "game_update") or_else nil),
+		shutdown     = cast(proc())(dynlib.symbol_address(lib, "game_shutdown") or_else nil),
+		memory       = cast(proc(
+		) -> rawptr)(dynlib.symbol_address(lib, "game_memory") or_else nil),
+		hot_reloaded = cast(proc(
+			g_mem: rawptr,
+			_: shared.Channels,
+		))(dynlib.symbol_address(lib, "game_hot_reloaded") or_else nil),
+		lib          = lib,
+		dll_time     = dll_time,
+		api_version  = api_version,
+	}
+
+	if api.init == nil ||
+	   api.update == nil ||
+	   api.shutdown == nil ||
+	   api.memory == nil ||
+	   api.hot_reloaded == nil {
+		dynlib.unload_library(api.lib)
+		fmt.println("Game DLL missing required procedure")
+		return {}, false
+	}
+
+	return api, true
+}
+
+unload_game_api :: proc(api: ^GameAPI) {
+	if api == nil {
+		return
+	}
+
+	dynlib.unload_library(api.lib)
+	del_cmd := fmt.ctprintf("rm game_{0}.dylib", api.api_version)
+	if libc.system(del_cmd) != 0 {
+		fmt.println("Failed to remove game_{0}.dylib copy", api.api_version)
 	}
 }
 

@@ -1,4 +1,4 @@
-package fido
+package game
 
 import "core:fmt"
 import "core:strings"
