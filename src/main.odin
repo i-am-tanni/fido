@@ -446,26 +446,3 @@ telnet_recv :: proc(conn: ^Connection, ev: telnet.Event) -> bool {
 
 	return true
 }
-
-// stuff the output channel
-output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
-	len := len(str)
-	bytes := 0
-	// stuff into the string into 256 byte blocks
-	for pos := 0; pos < len; pos += bytes {
-		block, ok := chan.recv(blocks_out)
-		assert(ok, "Output block could not be retrieved from return channel!")
-		bytes = min(len - pos, BLOCK_OUT_SIZE)
-		copy(block[:bytes], str[pos:pos + bytes])
-		chan.send(
-			output_channel,
-			UserOutput {
-				id = 32,
-				msg = string(block[:bytes]),
-				game_ref = game_ref,
-				conn_ref = conn_ref,
-				block = block,
-			},
-		)
-	}
-}
