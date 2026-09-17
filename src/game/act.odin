@@ -2,6 +2,7 @@ package game
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
+import "core:sync/chan"
 
 CRLF :: "\r\n"
 unknown_cmd :: "Huh?\r\n"
@@ -60,6 +61,27 @@ do_go :: proc(g_mem: ^GameMem, self_ref: Ref, dir: Direction) -> (str: string, o
 	exit_data := exit_get(exits, dir) or_return
 	child_move(g_mem, self_ref, exit_data.to_ref)
 	return do_look(g_mem, self_ref)
+}
+
+do_chat :: proc(g_mem: ^GameMem, self_ref: Ref, msg: string) -> bool {
+	self_id := deref(g_mem, self_ref) or_return
+	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
+	msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
+	for player in g_mem.player.dense {
+		chan.send(
+			output_channel,
+			UserOutput {
+				id             = 64,
+				conn_ref       = player.conn_ref,
+				// no point in looking up the ref so we provide a sentinel that signals
+				// that it's garbage and to be ignored
+				game_ref       = Ref{0, 0},
+				msg            = msg,
+				is_terminating = false,
+			},
+		)
+	}
+	return true
 }
 
 write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, observer: Id) {

@@ -29,10 +29,11 @@ BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
 NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
+BlockOut :: shared.BlockOut
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
-	// Pool is used for stable pointers
+	// Xar is used for stable pointers
 	connection_pool: xar.Array(Connection, 4),
 	connections:     [dynamic]^Connection,
 	free_list:       queue.Queue(u8),
@@ -69,7 +70,7 @@ input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
 blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
-blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
+blocks_out: chan.Chan(^BlockOut)
 output_channel: chan.Chan(UserOutput)
 
 
@@ -94,7 +95,7 @@ main :: proc() {
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
-	blocks_out, err = chan.create(chan.Chan(^[BLOCK_OUT_SIZE]byte), 80_000, context.allocator)
+	blocks_out, err = chan.create(chan.Chan(^BlockOut), 80_000, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
@@ -128,9 +129,10 @@ game_thread_proc :: proc() {
 	game_api.init(channels)
 	fmt.println("Game Thread Started")
 
-	blocks := new([80_000][BLOCK_OUT_SIZE]byte)
+	blocks := new([80_000]BlockOut)
 	// to initialize fill output block channel with available blocks
-	for &block in blocks {
+	for &block, i in blocks {
+		block.index = i
 		chan.send(blocks_out, &block)
 	}
 
@@ -254,6 +256,7 @@ network_thread_proc :: proc() {
 
 	nbio.accept_poly(socket, &server, on_accept)
 	last_game_tick := time.now()
+
 	for server.is_running {
 		err := nbio.tick(1 * time.Second)
 		fmt.assertf(err == nil, "nbio.tick error: %v", err)
@@ -271,6 +274,7 @@ network_thread_proc :: proc() {
 		//
 		for {
 			output := chan.try_recv(output_channel) or_break
+			defer return_out_block(output.block)
 			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
 			// if conn is invalid, terminated, or the generation mismatches, continue
 			if connection == nil ||
@@ -294,11 +298,13 @@ network_thread_proc :: proc() {
 			if output.is_terminating {
 				close(connection)
 			}
-			// Return used blocks
-			if output.block != nil {
-				chan.send(blocks_out, output.block)
-			}
 		}
+	}
+}
+
+return_out_block :: proc(block: ^BlockOut) {
+	if block != nil {
+		chan.send(blocks_out, block)
 	}
 }
 
