@@ -20,6 +20,8 @@ MAX_CONNECTIONS :: 255
 BUCKET_CAP :: 4096
 BUCKET_DRAIN_RATE :: 200
 KB :: 1024
+BLOCKS_OUT_MAX :: 80_000
+BLOCKS_IN_MAX :: 1024
 
 // Shared types
 Ref :: shared.Ref
@@ -29,7 +31,6 @@ BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
 NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
-BlockOut :: shared.BlockOut
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
@@ -41,7 +42,7 @@ Server :: struct {
 	is_running:      bool,
 	// 1MB is set aside to move inputs from the network thread to the main thread.
 	// If this 1mb is exhausted it will cause the thread to block until available
-	blocks:          ^[1024][BLOCK_IN_SIZE]byte,
+	blocks:          ^[BLOCKS_IN_MAX][BLOCK_IN_SIZE]byte,
 }
 
 Connection :: struct {
@@ -70,7 +71,7 @@ input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
 blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
-blocks_out: chan.Chan(^BlockOut)
+blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
 output_channel: chan.Chan(UserOutput)
 
 
@@ -87,19 +88,23 @@ GameAPI :: struct {
 
 main :: proc() {
 	err: runtime.Allocator_Error
-	input_channel, err = chan.create(chan.Chan(NetworkEvent), 1024, context.allocator)
+	input_channel, err = chan.create(chan.Chan(NetworkEvent), BLOCKS_IN_MAX, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize input channel: %v", err)
 	defer chan.destroy(input_channel)
 
-	blocks_in, err = chan.create(chan.Chan(^[BLOCK_IN_SIZE]byte), 1024, context.allocator)
+	blocks_in, err = chan.create(chan.Chan(^[BLOCK_IN_SIZE]byte), BLOCKS_IN_MAX, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
-	blocks_out, err = chan.create(chan.Chan(^BlockOut), 80_000, context.allocator)
+	blocks_out, err = chan.create(
+		chan.Chan(^[BLOCK_OUT_SIZE]byte),
+		BLOCKS_OUT_MAX,
+		context.allocator,
+	)
 	fmt.assertf(err == nil, "Could not initialize return channel: %v", err)
 	defer chan.destroy(blocks_in)
 
-	output_channel, err = chan.create(chan.Chan(UserOutput), 80_000, context.allocator)
+	output_channel, err = chan.create(chan.Chan(UserOutput), BLOCKS_OUT_MAX, context.allocator)
 	fmt.assertf(err == nil, "Could not initialize output channel: %v", err)
 	defer chan.destroy(output_channel)
 
@@ -128,11 +133,12 @@ game_thread_proc :: proc() {
 	}
 	game_api.init(channels)
 	fmt.println("Game Thread Started")
+	// backing block for network events sent from the game loop
+	blocks := new([BLOCKS_OUT_MAX][BLOCK_OUT_SIZE]byte)
+	defer free(blocks)
 
-	blocks := new([80_000]BlockOut)
 	// to initialize fill output block channel with available blocks
-	for &block, i in blocks {
-		block.index = i
+	for &block in blocks {
 		chan.send(blocks_out, &block)
 	}
 
@@ -232,7 +238,7 @@ network_thread_proc :: proc() {
 	fmt.println("IO Thread Started")
 	server: Server
 	// backing block for network events sent to the game loop
-	blocks := new([1024][BLOCK_IN_SIZE]byte)
+	blocks := new([BLOCKS_IN_MAX][BLOCK_IN_SIZE]byte)
 	defer free(blocks)
 
 	// fill input channel with all available blocks
@@ -252,6 +258,11 @@ network_thread_proc :: proc() {
 		blocks     = blocks,
 		loop       = nbio.current_thread_event_loop(),
 	}
+	// reads remaining tracks shared block reads remaining.
+	// since the output queue is single producer / single consumer, order is
+	// guaranteed. Therefore if shared blocks are sent in a group, then we can
+	// track reads for each group at a time
+	read_count := 0
 	queue.init(&server.free_list, 16)
 
 	nbio.accept_poly(socket, &server, on_accept)
@@ -270,16 +281,25 @@ network_thread_proc :: proc() {
 			}
 			last_game_tick = time.now()
 		}
+
 		// Step 2: For each output ready and able to send to a socket, do so
 		//
 		for {
 			output := chan.try_recv(output_channel) or_break
-			defer return_out_block(output.block)
+			read_count += 1
+			return_block_ok := false
+			if read_count >= output.num_recipients {
+				return_block_ok = output.block != nil
+				read_count = 0
+			}
 			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
 			// if conn is invalid, terminated, or the generation mismatches, continue
 			if connection == nil ||
 			   connection.is_terminated ||
 			   output.conn_ref.gen != connection.gen {
+				if return_block_ok {
+					chan.send(blocks_out, output.block)
+				}
 				continue
 			}
 			if len(output.msg) > 0 {
@@ -291,20 +311,17 @@ network_thread_proc :: proc() {
 				)
 			}
 			// If game_ref requires updating
-			if output.game_ref.id != 0 && connection.game_ref.id != output.game_ref.id {
+			if output.game_ref.id > 0 && connection.game_ref.id != output.game_ref.id {
 				connection.game_ref = output.game_ref
 			}
 			// If game thread requested termination
 			if output.is_terminating {
 				close(connection)
 			}
+			if return_block_ok {
+				chan.send(blocks_out, output.block)
+			}
 		}
-	}
-}
-
-return_out_block :: proc(block: ^BlockOut) {
-	if block != nil {
-		chan.send(blocks_out, block)
 	}
 }
 
@@ -329,6 +346,7 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	if !ok {
 		alloc_err: runtime.Allocator_Error
 		id = u8(xar.array_len(server.connection_pool))
+		fmt.println("len:", id)
 		connection, alloc_err = xar.push_back_elem_and_get_ptr(
 			&server.connection_pool,
 			Connection{},

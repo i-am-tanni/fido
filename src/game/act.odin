@@ -71,7 +71,6 @@ do_chat :: proc(g_mem: ^GameMem, self_ref: Ref, msg: string) -> bool {
 		chan.send(
 			output_channel,
 			UserOutput {
-				id             = 64,
 				conn_ref       = player.conn_ref,
 				// no point in looking up the ref so we provide a sentinel that signals
 				// that it's garbage and to be ignored

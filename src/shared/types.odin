@@ -38,7 +38,6 @@ NetworkEvent :: struct {
 }
 
 UserOutput :: struct {
-	id:             u64,
 	// id and generation of the connection
 	conn_ref:       ConnRef,
 	// id and generation of the entity / instance of this character in game
@@ -46,17 +45,11 @@ UserOutput :: struct {
 	// the payload from the server to the socket
 	msg:            string,
 	// pointer to backing block to return to the output return channel
-	block:          ^BlockOut,
+	block:          ^[BLOCK_OUT_SIZE]byte,
 	// (optional) the number of recipients that will read from hte block
 	num_recipients: int,
 	// a signal from the game loop to terminate the connection
 	is_terminating: bool,
-}
-
-// A backing block for string output
-BlockOut :: struct {
-	index: int,
-	data:  [BLOCK_OUT_SIZE]byte,
 }
 
 // Data needed for async
@@ -65,6 +58,6 @@ Channels :: struct {
 	// channel for obtaining recycled input blocks that back NetworkEvents
 	blocks_in:      chan.Chan(^[BLOCK_IN_SIZE]byte),
 	// channel for obtaining recycled output blocks that back UserOutput
-	blocks_out:     chan.Chan(^BlockOut),
+	blocks_out:     chan.Chan(^[BLOCK_OUT_SIZE]byte),
 	output_channel: chan.Chan(UserOutput),
 }

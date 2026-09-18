@@ -17,7 +17,6 @@ BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
 NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
-BlockOut :: shared.BlockOut
 
 MAX_DIR_VAL :: int(max(Direction))
 MAX_ENTITY_ID :: 24
@@ -31,7 +30,7 @@ input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
 blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
-blocks_out: chan.Chan(^BlockOut)
+blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
 output_channel: chan.Chan(UserOutput)
 
 Property :: enum {
@@ -127,6 +126,11 @@ Room :: struct {
 	id:    Id,
 }
 
+Recipient :: struct {
+	conn_ref: ConnRef,
+	game_ref: Ref,
+}
+
 @(export)
 game_init :: proc(channels: shared.Channels) {
 	g_mem = new(GameMem)
@@ -177,7 +181,7 @@ game_update :: proc() -> bool {
 		case .Command:
 			parsed, ok := parse_command(event.payload)
 			text, text_ok := dispatch_cmd(g_mem, event.game_ref, parsed)
-			output(text, event.game_ref, event.conn_ref)
+			output1(text, event.game_ref, event.conn_ref)
 			nbio.wake_up(event.loop)
 
 		case .Connect:
@@ -187,9 +191,8 @@ game_update :: proc() -> bool {
 
 			// move to room 1
 			child_prepend(g_mem, Ref{1, 0}, ref)
-
 			text, ok := do_look(g_mem, ref)
-			output(text, ref, event.conn_ref)
+			output1(text, ref, event.conn_ref)
 			nbio.wake_up(event.loop)
 
 
@@ -228,9 +231,8 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 	blocks_out = channels.blocks_out
 }
 
-
-// stuff the output channel
-output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
+output_n :: proc(str: string, recipients: []Recipient) {
+	num_recipients := len(recipients)
 	len := len(str)
 	bytes := 0
 	// stuff into the string into multiple blocks
@@ -238,14 +240,37 @@ output :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 		block, ok := chan.recv(blocks_out)
 		assert(ok, "Output block could not be retrieved from return channel!")
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
-		// It may be worth reference counting if the string is the same
-		// for all observers and exceeds 64 bytes. Is that typical?
-		copy(block.data[:bytes], str[pos:pos + bytes])
+		copy(block[:bytes], str[pos:pos + bytes])
+		for recipient in recipients {
+			chan.send(
+				output_channel,
+				UserOutput {
+					num_recipients = num_recipients,
+					msg = string(block[:bytes]),
+					game_ref = recipient.game_ref,
+					conn_ref = recipient.conn_ref,
+					block = block,
+				},
+			)
+		}
+	}
+}
+
+// stuff the output channel
+output1 :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
+	len := len(str)
+	bytes := 0
+	// stuff into the string into multiple blocks
+	for pos := 0; pos < len; pos += bytes {
+		block, ok := chan.recv(blocks_out)
+		assert(ok, "Output block could not be retrieved from return channel!")
+		bytes = min(len - pos, BLOCK_OUT_SIZE)
+		copy(block[:bytes], str[pos:pos + bytes])
 		chan.send(
 			output_channel,
 			UserOutput {
-				id = 32,
-				msg = string(block.data[:bytes]),
+				num_recipients = 1,
+				msg = string(block[:bytes]),
 				game_ref = game_ref,
 				conn_ref = conn_ref,
 				block = block,
@@ -559,7 +584,6 @@ send :: proc(g_mem: ^GameMem, ref: Ref, bytes: string) -> bool {
 	chan.send(
 		output_channel,
 		UserOutput {
-			id = 64,
 			conn_ref = player.conn_ref,
 			game_ref = ref,
 			msg = bytes,
