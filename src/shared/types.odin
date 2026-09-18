@@ -46,8 +46,8 @@ UserOutput :: struct {
 	msg:            string,
 	// pointer to backing block to return to the output return channel
 	block:          ^[BLOCK_OUT_SIZE]byte,
-	// (optional) the number of recipients that will read from hte block
-	num_recipients: int,
+	// (optional) the number of recipients that will read from the block
+	num_recipients: u8,
 	// a signal from the game loop to terminate the connection
 	is_terminating: bool,
 }

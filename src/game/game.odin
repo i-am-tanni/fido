@@ -181,7 +181,7 @@ game_update :: proc() -> bool {
 		case .Command:
 			parsed, ok := parse_command(event.payload)
 			text, text_ok := dispatch_cmd(g_mem, event.game_ref, parsed)
-			output1(text, event.game_ref, event.conn_ref)
+			output1(text, event.conn_ref)
 			nbio.wake_up(event.loop)
 
 		case .Connect:
@@ -192,7 +192,7 @@ game_update :: proc() -> bool {
 			// move to room 1
 			child_prepend(g_mem, Ref{1, 0}, ref)
 			text, ok := do_look(g_mem, ref)
-			output1(text, ref, event.conn_ref)
+			output1_with_game_ref(text, ref, event.conn_ref)
 			nbio.wake_up(event.loop)
 
 
@@ -231,8 +231,9 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 	blocks_out = channels.blocks_out
 }
 
-output_n :: proc(str: string, recipients: []Recipient) {
-	num_recipients := len(recipients)
+// send to multiple recipients
+output_n :: proc(str: string, refs: []ConnRef) {
+	num_recipients := len(refs)
 	len := len(str)
 	bytes := 0
 	// stuff into the string into multiple blocks
@@ -241,14 +242,14 @@ output_n :: proc(str: string, recipients: []Recipient) {
 		assert(ok, "Output block could not be retrieved from return channel!")
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		copy(block[:bytes], str[pos:pos + bytes])
-		for recipient in recipients {
+		for conn_ref in refs {
 			chan.send(
 				output_channel,
 				UserOutput {
-					num_recipients = num_recipients,
+					num_recipients = u8(num_recipients),
 					msg = string(block[:bytes]),
-					game_ref = recipient.game_ref,
-					conn_ref = recipient.conn_ref,
+					game_ref = Ref{0, 0},
+					conn_ref = conn_ref,
 					block = block,
 				},
 			)
@@ -256,8 +257,12 @@ output_n :: proc(str: string, recipients: []Recipient) {
 	}
 }
 
-// stuff the output channel
-output1 :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
+output1 :: proc(str: string, conn_ref: ConnRef) {
+	output1_with_game_ref(str, Ref{0, 0}, conn_ref)
+}
+
+// send to one recipient
+output1_with_game_ref :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 	len := len(str)
 	bytes := 0
 	// stuff into the string into multiple blocks

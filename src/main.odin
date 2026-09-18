@@ -262,7 +262,7 @@ network_thread_proc :: proc() {
 	// since the output queue is single producer / single consumer, order is
 	// guaranteed. Therefore if shared blocks are sent in a group, then we can
 	// track reads for each group at a time
-	read_count := 0
+	read_count: u8 = 0
 	queue.init(&server.free_list, 16)
 
 	nbio.accept_poly(socket, &server, on_accept)
