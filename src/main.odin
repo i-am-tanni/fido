@@ -346,7 +346,7 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	if !ok {
 		alloc_err: runtime.Allocator_Error
 		id = u8(xar.array_len(server.connection_pool))
-		fmt.println("len:", id)
+
 		connection, alloc_err = xar.push_back_elem_and_get_ptr(
 			&server.connection_pool,
 			Connection{},
