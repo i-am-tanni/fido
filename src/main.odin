@@ -262,7 +262,7 @@ network_thread_proc :: proc() {
 	// since the output queue is single producer / single consumer, order is
 	// guaranteed. Therefore if shared blocks are sent in a group, then we can
 	// track reads for each group at a time
-	read_count: u8 = 0
+	read_count: u8
 	queue.init(&server.free_list, 16)
 
 	nbio.accept_poly(socket, &server, on_accept)
@@ -286,22 +286,24 @@ network_thread_proc :: proc() {
 		//
 		for {
 			output := chan.try_recv(output_channel) or_break
+			// defer backing block recycling
 			read_count += 1
 			return_block_ok := false
 			if read_count >= output.num_recipients {
 				return_block_ok = output.block != nil
 				read_count = 0
 			}
-			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
+			defer if return_block_ok {
+				chan.send(blocks_out, output.block)
+			}
 			// if conn is invalid, terminated, or the generation mismatches, continue
+			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
 			if connection == nil ||
 			   connection.is_terminated ||
 			   output.conn_ref.gen != connection.gen {
-				if return_block_ok {
-					chan.send(blocks_out, output.block)
-				}
 				continue
 			}
+			// Output anything that is available to output
 			if len(output.msg) > 0 {
 				nbio.send_poly(
 					connection.socket,
@@ -310,16 +312,13 @@ network_thread_proc :: proc() {
 					on_sent,
 				)
 			}
-			// If game_ref requires updating
+			// update the game ref if requested
 			if output.game_ref.id > 0 && connection.game_ref.id != output.game_ref.id {
 				connection.game_ref = output.game_ref
 			}
-			// If game thread requested termination
+			// Terminate the connection if requested
 			if output.is_terminating {
 				close(connection)
-			}
-			if return_block_ok {
-				chan.send(blocks_out, output.block)
 			}
 		}
 	}
