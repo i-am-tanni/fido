@@ -248,7 +248,7 @@ output_n :: proc(str: string, refs: []ConnRef) {
 				UserOutput {
 					num_recipients = u8(num_recipients),
 					msg = string(block[:bytes]),
-					game_ref = Ref{0, 0},
+					game_ref = Ref{},
 					conn_ref = conn_ref,
 					block = block,
 				},
@@ -258,7 +258,7 @@ output_n :: proc(str: string, refs: []ConnRef) {
 }
 
 output1 :: proc(str: string, conn_ref: ConnRef) {
-	output1_with_game_ref(str, Ref{0, 0}, conn_ref)
+	output1_with_game_ref(str, Ref{}, conn_ref)
 }
 
 // send to one recipient

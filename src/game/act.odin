@@ -74,7 +74,7 @@ do_chat :: proc(g_mem: ^GameMem, self_ref: Ref, msg: string) -> bool {
 				conn_ref       = player.conn_ref,
 				// no point in looking up the ref so we provide a sentinel that signals
 				// that it's garbage and to be ignored
-				game_ref       = Ref{0, 0},
+				game_ref       = Ref{},
 				msg            = msg,
 				is_terminating = false,
 			},
