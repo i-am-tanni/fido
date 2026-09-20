@@ -180,19 +180,19 @@ game_update :: proc() -> bool {
 		switch event.type {
 		case .Command:
 			parsed, ok := parse_command(event.payload)
-			text, text_ok := dispatch_cmd(g_mem, event.game_ref, parsed)
-			output1(text, event.conn_ref)
+			_dispatch_ok := dispatch_cmd(g_mem, event, parsed)
 			nbio.wake_up(event.loop)
 
 		case .Connect:
 			fmt.println("Connected!")
-			// get game ref
+			// get game ref and communicate that to the network thread
 			ref := player_new(g_mem, Player{conn_ref = event.conn_ref})
-
+			// update game ref
+			update_game_ref(event.conn_ref, ref)
+			event.game_ref = ref
 			// move to room 1
 			child_prepend(g_mem, Ref{1, 0}, ref)
-			text, ok := do_look(g_mem, ref)
-			output1_with_game_ref(text, ref, event.conn_ref)
+			do_look(g_mem, event)
 			nbio.wake_up(event.loop)
 
 
@@ -231,38 +231,8 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 	blocks_out = channels.blocks_out
 }
 
-// send to multiple recipients
-output_n :: proc(str: string, refs: []ConnRef) {
-	num_recipients := len(refs)
-	len := len(str)
-	bytes := 0
-	// stuff into the string into multiple blocks
-	for pos := 0; pos < len; pos += bytes {
-		block, ok := chan.recv(blocks_out)
-		assert(ok, "Output block could not be retrieved from return channel!")
-		bytes = min(len - pos, BLOCK_OUT_SIZE)
-		copy(block[:bytes], str[pos:pos + bytes])
-		for conn_ref in refs {
-			chan.send(
-				output_channel,
-				UserOutput {
-					num_recipients = u8(num_recipients),
-					msg = string(block[:bytes]),
-					game_ref = Ref{},
-					conn_ref = conn_ref,
-					block = block,
-				},
-			)
-		}
-	}
-}
-
+// Output to one recipient
 output1 :: proc(str: string, conn_ref: ConnRef) {
-	output1_with_game_ref(str, Ref{}, conn_ref)
-}
-
-// send to one recipient
-output1_with_game_ref :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 	len := len(str)
 	bytes := 0
 	// stuff into the string into multiple blocks
@@ -276,7 +246,7 @@ output1_with_game_ref :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 			UserOutput {
 				num_recipients = 1,
 				msg = string(block[:bytes]),
-				game_ref = game_ref,
+				game_ref = Ref{},
 				conn_ref = conn_ref,
 				block = block,
 			},
@@ -284,6 +254,48 @@ output1_with_game_ref :: proc(str: string, game_ref: Ref, conn_ref: ConnRef) {
 	}
 }
 
+// Output to one recipient with a ref
+output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
+	id := deref(g_mem, ref) or_return
+	player := sparse_set_get_ptr(&g_mem.player, id) or_return
+	output1(str, player.conn_ref)
+	return true
+}
+
+// send to multiple recipients
+// used for shared blocks
+// e.g. the same message is broadcasted for all recipients
+output_n :: proc(str: string, refs: []ConnRef) {
+	// number of reads required for the shared block
+	num_recipients := len(refs)
+	len := len(str)
+	bytes := 0
+	// stuff into the string into multiple blocks
+	for pos := 0; pos < len; pos += bytes {
+		// shared block, which is read counted by the network thread
+		// to determine when to recycle
+		block, ok := chan.recv(blocks_out)
+		assert(ok, "Output block could not be retrieved from return channel!")
+		bytes = min(len - pos, BLOCK_OUT_SIZE)
+		dummy_ref := Ref{}
+		copy(block[:bytes], str[pos:pos + bytes])
+		for conn_ref in refs {
+			chan.send(
+				output_channel,
+				UserOutput {
+					num_recipients = u8(num_recipients),
+					msg            = string(block[:bytes]),
+					// only update_game_ref requires a verified game_ref
+					game_ref       = dummy_ref,
+					conn_ref       = conn_ref,
+					block          = block,
+				},
+			)
+		}
+	}
+}
+
+// given a ref, return a valid id or fail
 deref :: proc(state: ^GameMem, ref: Ref) -> (id: Id, is_valid: bool) {
 	if ref.id == 0 do return
 	entity := sparse_set_get_ptr(&state.entity, ref.id) or_return
@@ -583,17 +595,6 @@ player_new :: proc(g_mem: ^GameMem, data: Player) -> Ref {
 	return ref
 }
 
-send :: proc(g_mem: ^GameMem, ref: Ref, bytes: string) -> bool {
-	id := deref(g_mem, ref) or_return
-	player := sparse_set_get_ptr(&g_mem.player, id) or_return
-	chan.send(
-		output_channel,
-		UserOutput {
-			conn_ref = player.conn_ref,
-			game_ref = ref,
-			msg = bytes,
-			is_terminating = false,
-		},
-	)
-	return true
+update_game_ref :: #force_inline proc(conn_ref: ConnRef, game_ref: Ref) {
+	chan.send(output_channel, UserOutput{conn_ref = conn_ref, game_ref = game_ref})
 }

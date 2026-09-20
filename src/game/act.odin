@@ -15,32 +15,30 @@ direction_to_string := [Direction]string {
 	.Dir_West  = "West",
 }
 
-dispatch_cmd :: proc(g_mem: ^GameMem, self: Ref, input: Parsed_Input) -> (str: string, ok: bool) {
+dispatch_cmd :: proc(g_mem: ^GameMem, event: NetworkEvent, input: Parsed_Input) -> bool {
 	switch (input.command) {
 	case .Cmd_Look:
-		return do_look(g_mem, self)
+		return do_look(g_mem, event)
 	case .Cmd_Go_North:
-		return do_go(g_mem, self, .Dir_North)
+		return do_go(g_mem, event, .Dir_North)
 	case .Cmd_Go_South:
-		return do_go(g_mem, self, .Dir_South)
+		return do_go(g_mem, event, .Dir_South)
 	case .Cmd_Go_East:
-		return do_go(g_mem, self, .Dir_East)
+		return do_go(g_mem, event, .Dir_East)
 	case .Cmd_Go_West:
-		return do_go(g_mem, self, .Dir_West)
+		return do_go(g_mem, event, .Dir_West)
 	case .Cmd_Invalid:
-	//
 	}
-	buf, err := new([256]byte, context.temp_allocator)
-	sb := strings.builder_from_bytes(buf[:])
-	strings.write_string(&sb, unknown_cmd)
-	return strings.to_string(sb), false
+	// fallthrough if the above fails
+	output1("Huh?", event.conn_ref)
+	return false
 }
 
-do_look :: proc(g_mem: ^GameMem, self_ref: Ref) -> (str: string, ok: bool) {
+do_look :: proc(g_mem: ^GameMem, event: NetworkEvent) -> bool {
 	buf, err := new([4096]byte, context.temp_allocator)
-	if err != nil do return
+	if err != nil do return false
 	sb := strings.builder_from_bytes(buf[:])
-	self_id := deref(g_mem, self_ref) or_return // if we need to look in the room
+	self_id := deref(g_mem, event.game_ref) or_return // if we need to look in the room
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	// data
 	room_show := sparse_set_get_ptr(&g_mem.show, room_id) or_return
@@ -51,16 +49,18 @@ do_look :: proc(g_mem: ^GameMem, self_ref: Ref) -> (str: string, ok: bool) {
 	write_exits(&sb, g_mem, exits, self_id)
 	write_children(&sb, g_mem, contents, self_id)
 	write_prompt(&sb, g_mem, self_id)
-	return strings.to_string(sb), true
+	output1(strings.to_string(sb), event.conn_ref)
+	return true
 }
 
-do_go :: proc(g_mem: ^GameMem, self_ref: Ref, dir: Direction) -> (str: string, ok: bool) {
+do_go :: proc(g_mem: ^GameMem, event: NetworkEvent, dir: Direction) -> bool {
+	self_ref := event.game_ref
 	self_id := deref(g_mem, self_ref) or_return // if we need to look in the room
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	exits := sparse_set_get_ptr(&g_mem.exit, room_id) or_return
 	exit_data := exit_get(exits, dir) or_return
 	child_move(g_mem, self_ref, exit_data.to_ref)
-	return do_look(g_mem, self_ref)
+	return do_look(g_mem, event)
 }
 
 do_chat :: proc(g_mem: ^GameMem, self_ref: Ref, msg: string) -> bool {

@@ -1,2 +1,4 @@
 fido
-src.bin
+*.bin
+*.dylib
+!game.dylib
