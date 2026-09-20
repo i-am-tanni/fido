@@ -254,7 +254,8 @@ output1 :: proc(str: string, conn_ref: ConnRef) {
 	}
 }
 
-// Output to one recipient with a ref
+// Output to one recipient with a ref.
+// Looks up the conn_ref.
 output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
 	id := deref(g_mem, ref) or_return
 	player := sparse_set_get_ptr(&g_mem.player, id) or_return
@@ -265,9 +266,9 @@ output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
 // send to multiple recipients
 // used for shared blocks
 // e.g. the same message is broadcasted for all recipients
-output_n :: proc(str: string, refs: []ConnRef) {
+output_n :: proc(str: string, players: []Player) {
 	// number of reads required for the shared block
-	num_recipients := len(refs)
+	num_recipients := len(players)
 	len := len(str)
 	bytes := 0
 	// stuff into the string into multiple blocks
@@ -279,7 +280,8 @@ output_n :: proc(str: string, refs: []ConnRef) {
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		dummy_ref := Ref{}
 		copy(block[:bytes], str[pos:pos + bytes])
-		for conn_ref in refs {
+		for player in players {
+			if player.conn_ref.id == 0 do continue
 			chan.send(
 				output_channel,
 				UserOutput {
@@ -287,7 +289,7 @@ output_n :: proc(str: string, refs: []ConnRef) {
 					msg            = string(block[:bytes]),
 					// only update_game_ref requires a verified game_ref
 					game_ref       = dummy_ref,
-					conn_ref       = conn_ref,
+					conn_ref       = player.conn_ref,
 					block          = block,
 				},
 			)
@@ -592,6 +594,7 @@ player_new :: proc(g_mem: ^GameMem, data: Player) -> Ref {
 	prop_add(g_mem, ref, hierarchy)
 	prop_add(g_mem, ref, data)
 	prop_add(g_mem, ref, Show{short = "A player is here.", long = "", name = "Player"})
+
 	return ref
 }
 

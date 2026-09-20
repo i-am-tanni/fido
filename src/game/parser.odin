@@ -20,6 +20,7 @@ ParsedCommand :: enum {
 	Cmd_Go_South,
 	Cmd_Go_East,
 	Cmd_Go_West,
+	Cmd_Chat,
 }
 
 // Parses raw text input into a command and an argument string
@@ -52,6 +53,13 @@ str_to_command :: proc(str: string) -> ParsedCommand {
 			return .Cmd_Go_East
 		case 'w':
 			return .Cmd_Go_West
+		}
+	}
+
+	if len(str) > 1 {
+		switch (str[0]) {
+		case 'c':
+			return .Cmd_Chat
 		}
 	}
 

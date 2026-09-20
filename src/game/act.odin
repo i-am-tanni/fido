@@ -27,10 +27,18 @@ dispatch_cmd :: proc(g_mem: ^GameMem, event: NetworkEvent, input: Parsed_Input) 
 		return do_go(g_mem, event, .Dir_East)
 	case .Cmd_Go_West:
 		return do_go(g_mem, event, .Dir_West)
+	case .Cmd_Chat:
+		return do_chat(g_mem, event, input.args)
 	case .Cmd_Invalid:
 	}
 	// fallthrough if the above fails
-	output1("Huh?", event.conn_ref)
+	self_id := deref(g_mem, event.game_ref) or_return // if we need to look in the room
+	buf, err := make([]byte, 256, context.temp_allocator)
+	if err != nil do return false
+	sb := strings.builder_from_bytes(buf)
+	write_string_ln(&sb, "Huh?")
+	write_prompt(&sb, g_mem, self_id)
+	output1(strings.to_string(sb), event.conn_ref)
 	return false
 }
 
@@ -63,23 +71,11 @@ do_go :: proc(g_mem: ^GameMem, event: NetworkEvent, dir: Direction) -> bool {
 	return do_look(g_mem, event)
 }
 
-do_chat :: proc(g_mem: ^GameMem, self_ref: Ref, msg: string) -> bool {
-	self_id := deref(g_mem, self_ref) or_return
+do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
+	self_id := deref(g_mem, event.game_ref) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
-	msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
-	for player in g_mem.player.dense {
-		chan.send(
-			output_channel,
-			UserOutput {
-				conn_ref       = player.conn_ref,
-				// no point in looking up the ref so we provide a sentinel that signals
-				// that it's garbage and to be ignored
-				game_ref       = Ref{},
-				msg            = msg,
-				is_terminating = false,
-			},
-		)
-	}
+	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
+	output_n(chat_msg, g_mem.player.dense[:])
 	return true
 }
 

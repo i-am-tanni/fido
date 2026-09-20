@@ -297,7 +297,8 @@ network_thread_proc :: proc() {
 				chan.send(blocks_out, output.block)
 			}
 			// if conn is invalid, terminated, or the generation mismatches, continue
-			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id)
+			if output.conn_ref.id == 0 do continue
+			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id - 1)
 			if connection == nil ||
 			   connection.is_terminated ||
 			   output.conn_ref.gen != connection.gen {
@@ -344,7 +345,7 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	// .. and if that fails, get one from the xar connection pool
 	if !ok {
 		alloc_err: runtime.Allocator_Error
-		id = u8(xar.array_len(server.connection_pool))
+		id = u8(xar.array_len(server.connection_pool) + 1)
 
 		connection, alloc_err = xar.push_back_elem_and_get_ptr(
 			&server.connection_pool,
