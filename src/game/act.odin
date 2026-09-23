@@ -75,7 +75,40 @@ do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
 	self_id := deref(g_mem, event.game_ref) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
 	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
-	output_n(chat_msg, g_mem.player.dense[:])
+	refs := make([]ConnRef, len(g_mem.player.dense), context.temp_allocator)
+	for player, i in g_mem.player.dense {
+		refs[i] = player.conn_ref
+	}
+	output_n(chat_msg, refs[:])
+	return true
+}
+
+do_say :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
+	self_id := deref(g_mem, event.game_ref) or_return
+	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
+	p1_msg := fmt.tprintf("You say, \"{0}\"", msg)
+	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, msg)
+	output1(p1_msg, event.conn_ref)
+
+	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
+	start := room_contents.first_kid
+	// count number of recipients that are not the player
+	players := make([dynamic]ConnRef, context.temp_allocator)
+	//
+	for current := start;; current = current.next_sib {
+		child_id, ref_ok := deref(g_mem, current.ref)
+		if child_id == self_id {
+			continue
+		}
+		player_info, player_ok := sparse_set_get_ptr(&g_mem.player, child_id)
+		if player_ok {
+			append(&players, player_info.conn_ref)
+		}
+		if current.next_sib == start do break
+	}
+
+	output_n(p3_msg, players[:])
 	return true
 }
 

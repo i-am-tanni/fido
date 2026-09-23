@@ -297,7 +297,7 @@ network_thread_proc :: proc() {
 				chan.send(blocks_out, output.block)
 			}
 			// if conn is invalid, terminated, or the generation mismatches, continue
-			if output.conn_ref.id == 0 do continue
+			if output.conn_ref.id <= 0 do continue
 			connection := xar.get_ptr(&server.connection_pool, output.conn_ref.id - 1)
 			if connection == nil ||
 			   connection.is_terminated ||

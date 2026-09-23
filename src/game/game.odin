@@ -21,17 +21,21 @@ NetworkEventType :: shared.NetworkEventType
 MAX_DIR_VAL :: int(max(Direction))
 MAX_ENTITY_ID :: 24
 
-g_mem: ^GameMem
+///
+/// Globals
+///
 
-//
-// Channels
-//
+g_mem: ^GameMem
 input_channel: chan.Chan(NetworkEvent)
 // channel for obtaining recycled input blocks that back NetworkEvents
 blocks_in: chan.Chan(^[BLOCK_IN_SIZE]byte)
 // channel for obtaining recycled output blocks that back UserOutput
 blocks_out: chan.Chan(^[BLOCK_OUT_SIZE]byte)
 output_channel: chan.Chan(UserOutput)
+
+///
+/// Types
+///
 
 Property :: enum {
 	None,
@@ -64,10 +68,6 @@ ExitData :: struct {
 	direction:  Direction,
 	is_deleted: bool,
 }
-
-//
-// Property Structs
-//
 
 PropertyData :: union {
 	Hierarchy,
@@ -108,15 +108,16 @@ Player :: struct {
 }
 
 GameMem :: struct {
-	entity:    SparseSet(Entity),
-	hierarchy: SparseSet(Hierarchy),
-	parent:    [dynamic]Ref,
-	show:      SparseSet(Show),
-	health:    SparseSet(Health),
-	exit:      SparseSet(Exitable),
-	player:    SparseSet(Player),
+	entity:      SparseSet(Entity),
+	hierarchy:   SparseSet(Hierarchy),
+	parent:      [dynamic]Ref,
+	show:        SparseSet(Show),
+	health:      SparseSet(Health),
+	exit:        SparseSet(Exitable),
+	player:      SparseSet(Player),
 	// list of available ids for recycling
-	free_list: queue.Queue(Id),
+	free_list:   queue.Queue(Id),
+	event_queue: queue.Queue(Event),
 }
 
 Room :: struct {
@@ -129,6 +130,33 @@ Room :: struct {
 Recipient :: struct {
 	conn_ref: ConnRef,
 	game_ref: Ref,
+}
+
+///
+/// Event Types
+///
+
+Event :: union {
+	Ev_Look,
+	Ev_Say,
+	Ev_Move,
+}
+
+Ev_Look :: struct {
+	actor: Id,
+	room:  Id,
+}
+
+Ev_Say :: struct {
+	speaker: Id,
+	room:    Id,
+	text:    string,
+}
+
+Ev_Move :: struct {
+	actor:     Id,
+	from_room: Id,
+	to_room:   Id,
 }
 
 @(export)
@@ -266,12 +294,12 @@ output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
 // send to multiple recipients
 // used for shared blocks
 // e.g. the same message is broadcasted for all recipients
-output_n :: proc(str: string, players: []Player) {
+output_n :: proc(str: string, refs: []ConnRef) {
 	// number of reads required for the shared block
-	num_recipients := len(players)
+	num_recipients := len(refs)
 	len := len(str)
 	bytes := 0
-	// stuff into the string into multiple blocks
+	// for each block, send to all conn
 	for pos := 0; pos < len; pos += bytes {
 		// shared block, which is read counted by the network thread
 		// to determine when to recycle
@@ -280,19 +308,18 @@ output_n :: proc(str: string, players: []Player) {
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		dummy_ref := Ref{}
 		copy(block[:bytes], str[pos:pos + bytes])
-		for player in players {
-			if player.conn_ref.id == 0 do continue
-			chan.send(
-				output_channel,
-				UserOutput {
-					num_recipients = u8(num_recipients),
-					msg            = string(block[:bytes]),
-					// only update_game_ref requires a verified game_ref
-					game_ref       = dummy_ref,
-					conn_ref       = player.conn_ref,
-					block          = block,
-				},
-			)
+
+		output := UserOutput {
+			num_recipients = u8(num_recipients),
+			msg            = string(block[:bytes]),
+			game_ref       = dummy_ref,
+			block          = block,
+		}
+
+		for conn_ref in refs {
+			if conn_ref.id == 0 do continue
+			output.conn_ref = conn_ref
+			chan.send(output_channel, output)
 		}
 	}
 }
@@ -353,7 +380,7 @@ entity_rmv_hard :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	return true
 }
 
-has_property :: #force_inline proc(g_mem: ^GameMem, property: Property, id: Id) -> bool {
+has_property :: #force_inline proc(g_mem: ^GameMem, id: Id, property: Property) -> bool {
 	entity, _ := sparse_set_get_ptr(&g_mem.entity, id)
 	return property in entity.property_set
 }
@@ -361,7 +388,7 @@ has_property :: #force_inline proc(g_mem: ^GameMem, property: Property, id: Id) 
 prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 	id := deref(g_mem, ref) or_return
 	property := data_to_property(data)
-	if has_property(g_mem, property, id) do return false
+	if has_property(g_mem, id, property) do return false
 	switch val in data {
 	case Hierarchy:
 		sparse_set_try_insert(&g_mem.hierarchy, id, val)
@@ -383,7 +410,7 @@ prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 
 prop_rmv :: proc(g_mem: ^GameMem, ref: Ref, property: Property) -> bool {
 	id := deref(g_mem, ref) or_return
-	if !has_property(g_mem, property, id) do return false
+	if !has_property(g_mem, id, property) do return false
 
 	switch property {
 	case .Hierarchy:
