@@ -334,19 +334,14 @@ on_accept :: proc(op: ^nbio.Operation, server: ^Server) {
 	}
 
 	nbio.accept_poly(server.socket, server, on_accept)
-	id: u8
 	// try the freed connections queue first.
-	index, ok := queue.pop_front_safe(&server.free_list)
+	id, ok := queue.pop_front_safe(&server.free_list)
 	connection: ^Connection
 	if ok {
-		connection = xar.get_ptr(&server.connection_pool, index)
-		id = index
-	}
-	// .. and if that fails, get one from the xar connection pool
-	if !ok {
+		connection = xar.get_ptr(&server.connection_pool, id - 1)
+	} else {
 		alloc_err: runtime.Allocator_Error
 		id = u8(xar.array_len(server.connection_pool) + 1)
-
 		connection, alloc_err = xar.push_back_elem_and_get_ptr(
 			&server.connection_pool,
 			Connection{},
@@ -413,13 +408,20 @@ close :: proc(conn: ^Connection) {
 	conn.is_terminated = true
 	// incrementing gen will guarantee mis-matched output isn't sent to the
 	// wrong socket
+	event := NetworkEvent {
+		type = .Disconnect,
+		loop = conn.server.loop,
+		conn_ref = ConnRef{id = u32(conn.id), gen = conn.gen},
+		game_ref = conn.game_ref,
+		payload = "",
+		block = nil,
+	}
+	chan.send(input_channel, event)
 	conn.gen += 1
-	last := conn.server.connections[len(conn.server.connections) - 1]
-	// swap and pop
-	last.id = conn.id
-	unordered_remove(&conn.server.connections, conn.id)
+	unordered_remove(&conn.server.connections, conn.id - 1)
 	queue.push_back(&conn.server.free_list, conn.id)
 	nbio.close(conn.socket)
+
 }
 
 // Event handler for processed telnet events
