@@ -2,7 +2,6 @@ package game
 import "base:runtime"
 import "core:fmt"
 import "core:strings"
-import "core:sync/chan"
 
 CRLF :: "\r\n"
 unknown_cmd :: "Huh?\r\n"
@@ -15,60 +14,39 @@ direction_to_string := [Direction]string {
 	.Dir_West  = "West",
 }
 
-dispatch_cmd :: proc(g_mem: ^GameMem, event: NetworkEvent, input: Parsed_Input) -> bool {
-	switch (input.command) {
-	case .Cmd_Look:
-		return do_look(g_mem, event)
-	case .Cmd_Go_North:
-		return do_go(g_mem, event, .Dir_North)
-	case .Cmd_Go_South:
-		return do_go(g_mem, event, .Dir_South)
-	case .Cmd_Go_East:
-		return do_go(g_mem, event, .Dir_East)
-	case .Cmd_Go_West:
-		return do_go(g_mem, event, .Dir_West)
-	case .Cmd_Chat:
-		return do_chat(g_mem, event, input.args)
-	case .Cmd_Invalid:
-	}
-	// fallthrough if the above fails
-	self_id := deref(g_mem, event.game_ref) or_return // if we need to look in the room
-	buf, err := make([]byte, 256, context.temp_allocator)
-	if err != nil do return false
-	sb := strings.builder_from_bytes(buf)
-	write_string_ln(&sb, "Huh?")
-	write_prompt(&sb, g_mem, self_id)
-	output1(strings.to_string(sb), event.conn_ref)
-	return false
-}
+do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
+	self_id := event.actor
+	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
 
-do_look :: proc(g_mem: ^GameMem, event: NetworkEvent) -> bool {
-	buf, err := new([4096]byte, context.temp_allocator)
-	if err != nil do return false
-	sb := strings.builder_from_bytes(buf[:])
-	self_id := deref(g_mem, event.game_ref) or_return // if we need to look in the room
-	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-	// data
-	room_show := sparse_set_get_ptr(&g_mem.show, room_id) or_return
-	contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
-	exits, has_exits := sparse_set_get_ptr(&g_mem.exit, room_id)
-	write_string_ln(&sb, room_show.name)
-	write_string_ln(&sb, room_show.long)
-	write_exits(&sb, g_mem, exits, self_id)
-	write_children(&sb, g_mem, contents, self_id)
-	write_prompt(&sb, g_mem, self_id)
-	output1(strings.to_string(sb), event.conn_ref)
+	if is_player {
+		buf, err := new([4096]byte, context.temp_allocator)
+		if err != nil do return false
+		sb := strings.builder_from_bytes(buf[:])
+		room_id := event.room
+		// data
+		room_show := sparse_set_get_ptr(&g_mem.show, room_id) or_return
+		contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
+		exits, has_exits := sparse_set_get_ptr(&g_mem.exit, room_id)
+		write_string_ln(&sb, room_show.name)
+		write_string_ln(&sb, room_show.long)
+		write_exits(&sb, g_mem, exits, self_id)
+		write_children(&sb, g_mem, contents, self_id)
+		write_prompt(&sb, g_mem, self_id)
+		output1(strings.to_string(sb), player.conn_ref)
+		return true
+	}
+
 	return true
 }
 
-do_go :: proc(g_mem: ^GameMem, event: NetworkEvent, dir: Direction) -> bool {
-	self_ref := event.game_ref
+do_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
+	self_ref := event.actor
 	self_id := deref(g_mem, self_ref) or_return // if we need to look in the room
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	exits := sparse_set_get_ptr(&g_mem.exit, room_id) or_return
-	exit_data := exit_get(exits, dir) or_return
+	exit_data := exit_get(exits, event.exit_keyword) or_return
 	child_move(g_mem, self_ref, exit_data.to_ref)
-	return do_look(g_mem, event)
+	return do_look(g_mem, Ev_Look{actor = self_id, room = exit_data.to_ref.id})
 }
 
 do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
@@ -83,19 +61,21 @@ do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
 	return true
 }
 
-do_say :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
-	self_id := deref(g_mem, event.game_ref) or_return
-	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
+	self_id := event.speaker
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
-	p1_msg := fmt.tprintf("You say, \"{0}\"", msg)
-	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, msg)
-	output1(p1_msg, event.conn_ref)
 
-	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
+	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
+	if is_player {
+		p1_msg := fmt.tprintf("You say, \"{0}\"", event.text)
+		output1(p1_msg, player.conn_ref)
+	}
+
+	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
+	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, event.room) or_return
 	start := room_contents.first_kid
 	// count number of recipients that are not the player
 	players := make([dynamic]ConnRef, context.temp_allocator)
-	//
 	for current := start;; current = current.next_sib {
 		child_id, ref_ok := deref(g_mem, current.ref)
 		if child_id == self_id {

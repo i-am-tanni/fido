@@ -14,12 +14,12 @@ ParserState :: enum {
 }
 
 ParsedCommand :: enum {
-	Cmd_Invalid,
 	Cmd_Look,
 	Cmd_Go_North,
 	Cmd_Go_South,
 	Cmd_Go_East,
 	Cmd_Go_West,
+	Cmd_Say,
 	Cmd_Chat,
 }
 
@@ -33,35 +33,35 @@ parse_command :: proc(raw_input: string) -> (parsed: Parsed_Input, ok: bool) {
 	cmd: string
 	args: string
 	if len(split) > 0 do cmd = strings.to_lower(split[0], context.temp_allocator)
-	parsed_cmd := str_to_command(cmd)
-	if parsed_cmd == nil do return
+	parsed_cmd, cmd_ok := str_to_command(cmd)
+	if !cmd_ok do return
 	if len(split) > 1 do args = strings.trim_right(strings.trim_space(split[1]), "\r\n")
 	return Parsed_Input{command = parsed_cmd, args = args}, true
 }
 
-str_to_command :: proc(str: string) -> ParsedCommand {
+str_to_command :: proc(str: string) -> (command: ParsedCommand, ok: bool) {
 	// first, try parsing single character commands
 	if len(str) == 1 {
 		switch (str[0]) {
 		case 'l':
-			return .Cmd_Look
+			return .Cmd_Look, true
 		case 'n':
-			return .Cmd_Go_North
+			return .Cmd_Go_North, true
 		case 's':
-			return .Cmd_Go_South
+			return .Cmd_Go_South, true
 		case 'e':
-			return .Cmd_Go_East
+			return .Cmd_Go_East, true
 		case 'w':
-			return .Cmd_Go_West
+			return .Cmd_Go_West, true
 		}
 	}
 
 	if len(str) > 1 {
 		switch (str[0]) {
 		case 'c':
-			return .Cmd_Chat
+			return .Cmd_Chat, true
 		}
 	}
 
-	return .Cmd_Invalid
+	return
 }

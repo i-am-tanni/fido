@@ -6,6 +6,7 @@ import "core:container/queue"
 import "core:fmt"
 import "core:nbio"
 import "core:slice"
+import "core:strings"
 import "core:sync/chan"
 
 // Shared types
@@ -154,9 +155,8 @@ Ev_Say :: struct {
 }
 
 Ev_Move :: struct {
-	actor:     Id,
-	from_room: Id,
-	to_room:   Id,
+	actor:        Ref,
+	exit_keyword: Direction,
 }
 
 @(export)
@@ -199,17 +199,19 @@ game_init :: proc(channels: shared.Channels) {
 
 @(export)
 game_update :: proc() -> bool {
+	wake_up: bool
+	network_loop: ^nbio.Event_Loop
 	for {
 		event, event_ok := chan.try_recv(input_channel)
 		if !event_ok {
 			break
 		}
+		network_loop = event.loop
+		wake_up = event.type != .Disconnect
 
 		switch event.type {
 		case .Command:
-			parsed, ok := parse_command(event.payload)
-			_dispatch_ok := dispatch_cmd(g_mem, event, parsed)
-			nbio.wake_up(event.loop)
+			process_command(g_mem, event)
 
 		case .Connect:
 			fmt.println("Connected!")
@@ -219,23 +221,24 @@ game_update :: proc() -> bool {
 			update_game_ref(event.conn_ref, ref)
 			event.game_ref = ref
 			// move to room 1
-			child_prepend(g_mem, Ref{1, 0}, ref)
-			do_look(g_mem, event)
-			nbio.wake_up(event.loop)
-
+			spawn_room_ref := Ref{1, 0}
+			child_prepend(g_mem, spawn_room_ref, ref)
+			do_look(g_mem, Ev_Look{actor = ref.id, room = spawn_room_ref.id})
+			if event.block != nil {
+				chan.send(blocks_in, event.block)
+			}
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
 			entity_rmv_soft(g_mem, event.game_ref)
 		}
 
-
-		// return block to be reused if one was used
-		if event.block != nil {
-			chan.send(blocks_in, event.block)
-		}
 	}
 
+	process_game_events(g_mem)
+	if wake_up {
+		nbio.wake_up(network_loop)
+	}
 	free_all(context.temp_allocator)
 	return true
 }
@@ -257,6 +260,78 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 	output_channel = channels.output_channel
 	blocks_in = channels.blocks_in
 	blocks_out = channels.blocks_out
+}
+
+process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
+	self_id := deref(g_mem, input.game_ref) or_return
+	parsed, ok := parse_command(input.payload)
+	if !ok {
+		buf, err := make([]byte, 256, context.temp_allocator)
+		if err != nil do return false
+		sb := strings.builder_from_bytes(buf)
+		write_string_ln(&sb, "Huh?")
+		write_prompt(&sb, g_mem, self_id)
+		output1(strings.to_string(sb), input.conn_ref)
+		return false
+	}
+	ev: Event
+	switch parsed.command {
+	case .Cmd_Look:
+		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+		ev = Ev_Look {
+			actor = self_id,
+			room  = room_id,
+		}
+
+	case .Cmd_Go_North:
+		ev = Ev_Move {
+			actor        = input.game_ref,
+			exit_keyword = .Dir_North,
+		}
+	case .Cmd_Go_South:
+		ev = Ev_Move {
+			actor        = input.game_ref,
+			exit_keyword = .Dir_South,
+		}
+	case .Cmd_Go_East:
+		ev = Ev_Move {
+			actor        = input.game_ref,
+			exit_keyword = .Dir_East,
+		}
+	case .Cmd_Go_West:
+		ev = Ev_Move {
+			actor        = input.game_ref,
+			exit_keyword = .Dir_West,
+		}
+
+	case .Cmd_Say:
+		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+		ev = Ev_Say {
+			speaker = self_id,
+			room    = room_id,
+			text    = parsed.args,
+		}
+
+	case .Cmd_Chat:
+		do_chat(g_mem, input, parsed.args)
+	}
+
+	queue.push_back(&g_mem.event_queue, ev)
+	return true
+}
+
+process_game_events :: proc(g_mem: ^GameMem) {
+	for {
+		event := queue.pop_front_safe(&g_mem.event_queue) or_break
+		switch val in event {
+		case Ev_Look:
+			do_look(g_mem, val)
+		case Ev_Say:
+			do_say(g_mem, val)
+		case Ev_Move:
+			do_move(g_mem, val)
+		}
+	}
 }
 
 // Output to one recipient
