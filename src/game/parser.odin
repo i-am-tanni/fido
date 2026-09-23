@@ -2,7 +2,6 @@ package game
 
 import "core:fmt"
 import "core:strings"
-
 // Represents the parsed input from a player
 Parsed_Input :: struct {
 	command: ParsedCommand,
@@ -60,6 +59,8 @@ str_to_command :: proc(str: string) -> (command: ParsedCommand, ok: bool) {
 		switch (str[0]) {
 		case 'c':
 			return .Cmd_Chat, true
+		case 's':
+			return .Cmd_Say, true
 		}
 	}
 

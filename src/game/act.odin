@@ -73,17 +73,18 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 
 	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, event.room) or_return
+
 	start := room_contents.first_kid
 	// count number of recipients that are not the player
 	players := make([dynamic]ConnRef, context.temp_allocator)
+
 	for current := start;; current = current.next_sib {
 		child_id, ref_ok := deref(g_mem, current.ref)
-		if child_id == self_id {
-			continue
-		}
-		player_info, player_ok := sparse_set_get_ptr(&g_mem.player, child_id)
-		if player_ok {
-			append(&players, player_info.conn_ref)
+		if child_id != self_id {
+			player_info, player_ok := sparse_set_get_ptr(&g_mem.player, child_id)
+			if player_ok {
+				append(&players, player_info.conn_ref)
+			}
 		}
 		if current.next_sib == start do break
 	}
