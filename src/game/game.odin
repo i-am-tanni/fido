@@ -224,9 +224,6 @@ game_update :: proc() -> bool {
 			spawn_room_ref := Ref{1, 0}
 			child_prepend(g_mem, spawn_room_ref, ref)
 			do_look(g_mem, Ev_Look{actor = ref.id, room = spawn_room_ref.id})
-			if event.block != nil {
-				chan.send(blocks_in, event.block)
-			}
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
@@ -317,6 +314,8 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 	}
 
 	queue.push_back(&g_mem.event_queue, ev)
+	assert(input.block != nil)
+	chan.send(blocks_in, input.block)
 	return true
 }
 
