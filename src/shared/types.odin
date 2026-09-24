@@ -2,10 +2,12 @@ package types
 
 import "core:nbio"
 import "core:sync/chan"
+import "core:time"
 
 // Backing block sizes for moving bytes to and from the network / game loops
 BLOCK_OUT_SIZE :: 512
 BLOCK_IN_SIZE :: 1024
+GAME_TICK_RATE :: time.Millisecond * 125
 
 Id :: distinct u32
 

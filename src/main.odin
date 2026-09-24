@@ -14,7 +14,7 @@ import "core:time"
 import "shared"
 import "telnet"
 
-GAME_TICK_RATE :: time.Millisecond * 100
+
 MAX_CONNECTIONS :: 255
 // Leaky Bucket rate limiting constants in bytes
 BUCKET_CAP :: 4096
@@ -31,6 +31,7 @@ BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
 NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
+GameTickRate :: shared.GameTickRate
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
