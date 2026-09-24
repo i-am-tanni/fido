@@ -33,7 +33,6 @@ do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 		write_children(&sb, g_mem, contents, self_id)
 		write_prompt(&sb, g_mem, self_id)
 		output1(strings.to_string(sb), player.conn_ref)
-		return true
 	}
 
 	return true
@@ -44,8 +43,9 @@ do_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	exits := sparse_set_get_ptr(&g_mem.exit, room_id) or_return
 	exit_data := exit_get(exits, event.exit_keyword) or_return
-	child_move(g_mem, event.actor, exit_data.to_ref)
-	return do_look(g_mem, Ev_Look{actor = event.actor, room = exit_data.to_ref})
+	child_move(g_mem, event.actor, exit_data.to_ref) or_return
+	do_look(g_mem, Ev_Look{actor = event.actor, room = exit_data.to_ref}) or_return
+	return true
 }
 
 do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {

@@ -27,7 +27,7 @@ parse_command :: proc(raw_input: string) -> (parsed: Parsed_Input, ok: bool) {
 	// Trim leading/trailing whitespace (newlines, carriage returns, spaces)
 	trimmed := strings.trim_space(raw_input)
 	if len(trimmed) == 0 do return
-	split, err := strings.split_after_n(trimmed, " ", 2, context.temp_allocator)
+	split, err := strings.split_n(trimmed, " ", 2, context.temp_allocator)
 	if err != nil do return
 	cmd: string
 	args: string
@@ -38,10 +38,10 @@ parse_command :: proc(raw_input: string) -> (parsed: Parsed_Input, ok: bool) {
 	return Parsed_Input{command = parsed_cmd, args = args}, true
 }
 
-str_to_command :: proc(str: string) -> (command: ParsedCommand, ok: bool) {
+str_to_command :: proc(text: string) -> (command: ParsedCommand, ok: bool) {
 	// first, try parsing single character commands
-	if len(str) == 1 {
-		switch (str[0]) {
+	if len(text) == 1 {
+		switch (text[0]) {
 		case 'l':
 			return .Cmd_Look, true
 		case 'n':
@@ -52,14 +52,18 @@ str_to_command :: proc(str: string) -> (command: ParsedCommand, ok: bool) {
 			return .Cmd_Go_East, true
 		case 'w':
 			return .Cmd_Go_West, true
+		case:
+			return
 		}
 	}
 
-	if len(str) > 1 {
-		switch (str[0]) {
-		case 'c':
+	switch (text[0]) {
+	case 'c':
+		if text == "chat" {
 			return .Cmd_Chat, true
-		case 's':
+		}
+	case 's':
+		if text == "say" {
 			return .Cmd_Say, true
 		}
 	}
