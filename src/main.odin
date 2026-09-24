@@ -31,7 +31,7 @@ BLOCK_OUT_SIZE :: shared.BLOCK_OUT_SIZE
 NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
-GameTickRate :: shared.GameTickRate
+GAME_TICK_RATE :: shared.GAME_TICK_RATE
 
 Server :: struct {
 	socket:          nbio.TCP_Socket,
