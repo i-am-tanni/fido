@@ -144,13 +144,13 @@ Event :: union {
 }
 
 Ev_Look :: struct {
-	actor: Id,
-	room:  Id,
+	actor: Ref,
+	room:  Ref,
 }
 
 Ev_Say :: struct {
-	speaker: Id,
-	room:    Id,
+	speaker: Ref,
+	room:    Ref,
 	text:    string,
 }
 
@@ -223,7 +223,7 @@ game_update :: proc() -> bool {
 			// move to room 1
 			spawn_room_ref := Ref{1, 0}
 			child_prepend(g_mem, spawn_room_ref, ref)
-			do_look(g_mem, Ev_Look{actor = ref.id, room = spawn_room_ref.id})
+			do_look(g_mem, Ev_Look{actor = ref, room = spawn_room_ref})
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
@@ -274,10 +274,9 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 	ev: Event
 	switch parsed.command {
 	case .Cmd_Look:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Ev_Look {
-			actor = self_id,
-			room  = room_id,
+			actor = input.game_ref,
+			room  = g_mem.parent[self_id],
 		}
 
 	case .Cmd_Go_North:
@@ -304,8 +303,8 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 	case .Cmd_Say:
 		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Ev_Say {
-			speaker = self_id,
-			room    = room_id,
+			speaker = input.game_ref,
+			room    = g_mem.parent[self_id],
 			text    = parsed.args,
 		}
 

@@ -15,14 +15,14 @@ direction_to_string := [Direction]string {
 }
 
 do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
-	self_id := event.actor
+	self_id := deref(g_mem, event.actor) or_return
+	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
 
 	if is_player {
 		buf, err := new([4096]byte, context.temp_allocator)
 		if err != nil do return false
 		sb := strings.builder_from_bytes(buf[:])
-		room_id := event.room
 		// data
 		room_show := sparse_set_get_ptr(&g_mem.show, room_id) or_return
 		contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
@@ -40,13 +40,12 @@ do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 }
 
 do_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
-	self_ref := event.actor
-	self_id := deref(g_mem, self_ref) or_return // if we need to look in the room
+	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	exits := sparse_set_get_ptr(&g_mem.exit, room_id) or_return
 	exit_data := exit_get(exits, event.exit_keyword) or_return
-	child_move(g_mem, self_ref, exit_data.to_ref)
-	return do_look(g_mem, Ev_Look{actor = self_id, room = exit_data.to_ref.id})
+	child_move(g_mem, event.actor, exit_data.to_ref)
+	return do_look(g_mem, Ev_Look{actor = event.actor, room = exit_data.to_ref})
 }
 
 do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
@@ -62,7 +61,7 @@ do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
 }
 
 do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
-	self_id := event.speaker
+	self_id := deref(g_mem, event.speaker) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
 
 	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
@@ -72,7 +71,8 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	}
 
 	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
-	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, event.room) or_return
+	room_id := deref(g_mem, event.room) or_return
+	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 
 	start := room_contents.first_kid
 	// count number of recipients that are not the player
