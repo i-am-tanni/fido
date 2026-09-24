@@ -271,7 +271,7 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 		output1(strings.to_string(sb), input.conn_ref)
 		return false
 	}
-	ev: Event
+	ev: Event = ---
 	switch parsed.command {
 	case .Cmd_Look:
 		ev = Ev_Look {
