@@ -53,7 +53,8 @@ do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
 	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
 	refs := make([]ConnRef, len(g_mem.player.dense), context.temp_allocator)
 	for player, i in g_mem.player.dense {
-		refs[i] = player.conn_ref
+		if i == INVALID_INDEX do continue
+		refs[i - 1] = player.conn_ref
 	}
 	output_n(chat_msg, refs[:])
 	return true
