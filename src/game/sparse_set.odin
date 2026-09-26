@@ -124,7 +124,7 @@ sparse_set_remove :: proc(sparse_set: ^SparseSet($T), removed_id: Id) {
 	unordered_remove(&sparse_set.id, removed_index)
 }
 
-sparse_set_array_to_iter :: proc(sparse_set: ^SparseSet($T)) -> SparseSetIter(T) {
+sparse_set_to_iter :: proc(sparse_set: ^SparseSet($T)) -> SparseSetIter(T) {
 	// ignore sentinel
 	return {index = 1, data = sparse_set.dense[:]}
 }
