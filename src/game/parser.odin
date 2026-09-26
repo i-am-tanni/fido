@@ -52,6 +52,8 @@ str_to_command :: proc(text: string) -> (command: ParsedCommand, ok: bool) {
 			return .Cmd_Go_East, true
 		case 'w':
 			return .Cmd_Go_West, true
+		case 'c':
+			return .Cmd_Chat, true
 		case:
 			return
 		}

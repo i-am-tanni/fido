@@ -51,10 +51,10 @@ do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
 	self_id := deref(g_mem, event.game_ref) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
 	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
-	refs := make([]ConnRef, len(g_mem.player.dense), context.temp_allocator)
-	for player, i in g_mem.player.dense {
-		if i == INVALID_INDEX do continue
-		refs[i - 1] = player.conn_ref
+	player := g_mem.player.dense
+	refs := make([]ConnRef, len(player), context.temp_allocator)
+	for i := 1; i < len(player); i += 1 {
+		refs[i - 1] = player[i].conn_ref
 	}
 	output_n(chat_msg, refs[:])
 	return true
