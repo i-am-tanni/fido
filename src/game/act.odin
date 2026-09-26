@@ -17,8 +17,7 @@ direction_to_string := [Direction]string {
 do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
-
+	player, i, is_player := soa_set_get(&g_mem.player, self_id)
 	if is_player {
 		buf, err := new([4096]byte, context.temp_allocator)
 		if err != nil do return false
@@ -32,7 +31,7 @@ do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 		write_exits(&sb, g_mem, exits, self_id)
 		write_children(&sb, g_mem, contents, self_id)
 		write_prompt(&sb, g_mem, self_id)
-		output1(strings.to_string(sb), player.conn_ref)
+		output1(strings.to_string(sb), player[i].conn_ref)
 	}
 
 	return true
@@ -64,10 +63,10 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	self_id := deref(g_mem, event.speaker) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
 
-	player, is_player := sparse_set_get_ptr(&g_mem.player, self_id)
+	player, i, is_player := soa_set_get(&g_mem.player, self_id)
 	if is_player {
 		p1_msg := fmt.tprintf("You say, \"{0}\"", event.text)
-		output1(p1_msg, player.conn_ref)
+		output1(p1_msg, player[i].conn_ref)
 	}
 
 	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
@@ -81,9 +80,9 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	for current := start;; current = current.next_sib {
 		child_id, ref_ok := deref(g_mem, current.ref)
 		if child_id != self_id {
-			player_info, player_ok := sparse_set_get_ptr(&g_mem.player, child_id)
-			if player_ok {
-				append(&players, player_info.conn_ref)
+			index, is_player := soa_set_index(&g_mem.player, child_id)
+			if is_player {
+				append(&players, player[index].conn_ref)
 			}
 		}
 		if current.next_sib == start do break

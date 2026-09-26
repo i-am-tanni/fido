@@ -21,6 +21,7 @@ NetworkEventType :: shared.NetworkEventType
 
 MAX_DIR_VAL :: int(max(Direction))
 MAX_ENTITY_ID :: 24
+INVALID_INDEX :: 0
 
 ///
 /// Globals
@@ -115,7 +116,7 @@ GameMem :: struct {
 	show:        SparseSet(Show),
 	health:      SparseSet(Health),
 	exit:        SparseSet(Exitable),
-	player:      SparseSet(Player),
+	player:      SoaSet(Player),
 	// list of available ids for recycling
 	free_list:   queue.Queue(Id),
 	event_queue: queue.Queue(Event),
@@ -172,7 +173,7 @@ game_init :: proc(channels: shared.Channels) {
 	sparse_set_init(&g_mem.hierarchy, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.show, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.exit, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
-	sparse_set_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
+	soa_set_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	g_mem.parent = make([dynamic]Ref, MAX_ENTITY_ID, MAX_ENTITY_ID)
 
 	// hierarchy has a special init step b/c we want to avoid using nulls for now
@@ -359,8 +360,8 @@ output1 :: proc(str: string, conn_ref: ConnRef) {
 // Looks up the conn_ref.
 output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
 	id := deref(g_mem, ref) or_return
-	player := sparse_set_get_ptr(&g_mem.player, id) or_return
-	output1(str, player.conn_ref)
+	dense, index := soa_set_get(&g_mem.player, id) or_return
+	output1(str, dense[index].conn_ref)
 	return true
 }
 
@@ -390,7 +391,7 @@ output_n :: proc(str: string, refs: []ConnRef) {
 		}
 
 		for conn_ref in refs {
-			if conn_ref.id == 0 do continue
+			if conn_ref.id == INVALID_INDEX do continue
 			output.conn_ref = conn_ref
 			chan.send(output_channel, output)
 		}
@@ -399,7 +400,7 @@ output_n :: proc(str: string, refs: []ConnRef) {
 
 // given a ref, return a valid id or fail
 deref :: proc(state: ^GameMem, ref: Ref) -> (id: Id, is_valid: bool) {
-	if ref.id == 0 do return
+	if ref.id == INVALID_INDEX do return
 	entity := sparse_set_get_ptr(&state.entity, ref.id) or_return
 	return ref.id, ref == entity.ref
 }
@@ -472,7 +473,7 @@ prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 	case Exitable:
 		sparse_set_try_insert(&g_mem.exit, id, val)
 	case Player:
-		sparse_set_try_insert(&g_mem.player, id, val)
+		soa_set_insert(&g_mem.player, id, val)
 	}
 
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -495,7 +496,7 @@ prop_rmv :: proc(g_mem: ^GameMem, ref: Ref, property: Property) -> bool {
 	case .Exitable:
 		sparse_set_remove(&g_mem.exit, id)
 	case .Player:
-		sparse_set_remove(&g_mem.player, id)
+		soa_set_remove(&g_mem.player, id)
 	case .None: // do nothing
 	}
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -663,7 +664,7 @@ exit_rmv :: proc(data: ^Exitable, direction: Direction) -> bool {
 
 exit_get :: proc(exits: ^Exitable, direction: Direction) -> (^ExitData, bool) {
 	idx := exits.sparse[direction]
-	if idx == 0 do return nil, false
+	if idx == INVALID_INDEX do return nil, false
 	exit_data := &exits.exit_list_sorted[idx]
 	return exit_data, true
 }
@@ -694,7 +695,6 @@ player_new :: proc(g_mem: ^GameMem, data: Player) -> Ref {
 	prop_add(g_mem, ref, hierarchy)
 	prop_add(g_mem, ref, data)
 	prop_add(g_mem, ref, Show{short = "A player is here.", long = "", name = "Player"})
-
 	return ref
 }
 
