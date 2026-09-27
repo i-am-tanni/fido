@@ -214,7 +214,7 @@ game_update :: proc() -> bool {
 			break
 		}
 		wake_up = wake_up || event.type != .Disconnect
-		network_loop = network_loop != nil ? network_loop : event.loop
+		network_loop = event.loop
 
 		switch event.type {
 		case .Command:
