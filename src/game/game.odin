@@ -110,16 +110,17 @@ Player :: struct {
 }
 
 GameMem :: struct {
-	entity:      SparseSet(Entity),
-	hierarchy:   SparseSet(Hierarchy),
-	parent:      [dynamic]Ref,
-	show:        SparseSet(Show),
-	health:      SparseSet(Health),
-	exit:        SparseSet(Exitable),
-	player:      SoaSet(Player),
+	entity:        SparseSet(Entity),
+	event_queue:   queue.Queue(Event),
 	// list of available ids for recycling
-	free_list:   queue.Queue(Id),
-	event_queue: queue.Queue(Event),
+	free_list:     queue.Queue(Id),
+	hierarchy:     SparseSet(Hierarchy),
+	parent:        [dynamic]Ref,
+	show:          SparseSet(Show),
+	health:        SparseSet(Health),
+	exit:          SparseSet(Exitable),
+	player:        SoaSet(Player),
+	player_lookup: map[string]Ref,
 }
 
 Room :: struct {
@@ -202,13 +203,18 @@ game_init :: proc(channels: shared.Channels) {
 game_update :: proc() -> bool {
 	wake_up: bool
 	network_loop: ^nbio.Event_Loop
+	// wake up the network thread at the end of the game loop
+	// if there is any output to process
+	defer if wake_up {
+		nbio.wake_up(network_loop)
+	}
 	for {
 		event, event_ok := chan.try_recv(input_channel)
 		if !event_ok {
 			break
 		}
-		network_loop = event.loop
-		wake_up = event.type != .Disconnect
+		wake_up = wake_up || event.type != .Disconnect
+		network_loop = network_loop != nil ? network_loop : event.loop
 
 		switch event.type {
 		case .Command:
@@ -234,9 +240,6 @@ game_update :: proc() -> bool {
 	}
 
 	process_game_events(g_mem)
-	if wake_up {
-		nbio.wake_up(network_loop)
-	}
 	free_all(context.temp_allocator)
 	return true
 }
@@ -258,65 +261,6 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 	output_channel = channels.output_channel
 	blocks_in = channels.blocks_in
 	blocks_out = channels.blocks_out
-}
-
-process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
-	self_id := deref(g_mem, input.game_ref) or_return
-	parsed, ok := parse_command(input.payload)
-	if !ok {
-		buf, err := make([]byte, 256, context.temp_allocator)
-		if err != nil do return false
-		sb := strings.builder_from_bytes(buf)
-		write_string_ln(&sb, "Huh?")
-		write_prompt(&sb, g_mem, self_id)
-		output1(strings.to_string(sb), input.conn_ref)
-		return false
-	}
-	ev: Event = ---
-	switch parsed.command {
-	case .Cmd_Look:
-		ev = Ev_Look {
-			actor = input.game_ref,
-			room  = g_mem.parent[self_id],
-		}
-
-	case .Cmd_Go_North:
-		ev = Ev_Move {
-			actor        = input.game_ref,
-			exit_keyword = .Dir_North,
-		}
-	case .Cmd_Go_South:
-		ev = Ev_Move {
-			actor        = input.game_ref,
-			exit_keyword = .Dir_South,
-		}
-	case .Cmd_Go_East:
-		ev = Ev_Move {
-			actor        = input.game_ref,
-			exit_keyword = .Dir_East,
-		}
-	case .Cmd_Go_West:
-		ev = Ev_Move {
-			actor        = input.game_ref,
-			exit_keyword = .Dir_West,
-		}
-
-	case .Cmd_Say:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-		ev = Ev_Say {
-			speaker = input.game_ref,
-			room    = g_mem.parent[self_id],
-			text    = parsed.args,
-		}
-
-	case .Cmd_Chat:
-		do_chat(g_mem, input, parsed.args)
-	}
-
-	queue.push_back(&g_mem.event_queue, ev)
-	assert(input.block != nil)
-	chan.send(blocks_in, input.block)
-	return true
 }
 
 process_game_events :: proc(g_mem: ^GameMem) {
@@ -523,13 +467,9 @@ data_to_property :: proc(data: PropertyData) -> Property {
 	}
 }
 
-hierarchy_init :: proc(g_mem: GameMem, hierarchy: ^Hierarchy) {
-	sentinel := &g_mem.hierarchy.dense[0]
-	hierarchy^ = {
-		first_kid = sentinel,
-		next_sib  = sentinel,
-		prev_sib  = sentinel,
-	}
+hierarchy_new :: proc(g_mem: GameMem) -> Hierarchy {
+	invalid := &g_mem.hierarchy.dense[0]
+	return Hierarchy{first_kid = invalid, next_sib = invalid, prev_sib = invalid}
 }
 
 child_move :: proc(g_mem: ^GameMem, child_ref: Ref, to_parent: Ref) -> bool {
@@ -676,8 +616,7 @@ is_player :: proc(g_mem: GameMem, id: Id) -> bool {
 
 room_new :: proc(g_mem: ^GameMem, room: Room) -> Ref {
 	ref := entity_new(g_mem, room.id)
-	hierarchy := Hierarchy{}
-	hierarchy_init(g_mem^, &hierarchy)
+	hierarchy := hierarchy_new(g_mem^)
 	hierarchy.ref = ref
 	exits := Exitable{}
 	append(&exits.exit_list_sorted, ExitData{})
@@ -687,13 +626,12 @@ room_new :: proc(g_mem: ^GameMem, room: Room) -> Ref {
 	return ref
 }
 
-player_new :: proc(g_mem: ^GameMem, data: Player) -> Ref {
+player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 	ref := entity_new_assign_id(g_mem)
-	hierarchy := Hierarchy{}
-	hierarchy_init(g_mem^, &hierarchy)
+	hierarchy := hierarchy_new(g_mem^)
 	hierarchy.ref = ref
 	prop_add(g_mem, ref, hierarchy)
-	prop_add(g_mem, ref, data)
+	prop_add(g_mem, ref, player)
 	prop_add(g_mem, ref, Show{short = "A player is here.", long = "", name = "Player"})
 	return ref
 }
