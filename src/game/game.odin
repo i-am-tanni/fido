@@ -226,7 +226,6 @@ game_update :: proc() -> bool {
 			ref := player_new(g_mem, Player{conn_ref = event.conn_ref})
 			// update game ref
 			update_game_ref(event.conn_ref, ref)
-			event.game_ref = ref
 			// move to room 1
 			spawn_room_ref := Ref{1, 0}
 			child_prepend(g_mem, spawn_room_ref, ref)
