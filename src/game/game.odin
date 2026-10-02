@@ -48,6 +48,7 @@ Property :: enum {
 	Player,
 }
 
+
 PropertySet :: bit_set[Property]
 
 Entity :: struct {
@@ -79,6 +80,13 @@ PropertyData :: union {
 	Player,
 }
 
+MatchResult :: enum {
+	Reject,
+	Suggestion,
+	Match,
+}
+
+
 // A cyclical double-linked list for nesting entities
 Hierarchy :: struct {
 	ref:       Ref,
@@ -88,9 +96,10 @@ Hierarchy :: struct {
 }
 
 Show :: struct {
-	name:  string,
-	short: string,
-	long:  string,
+	name:    string,
+	short:   string,
+	long:    string,
+	keyword: [8]u16,
 }
 
 Health :: struct {
@@ -121,6 +130,8 @@ GameMem :: struct {
 	exit:          SparseSet(Exitable),
 	player:        SoaSet(Player),
 	player_lookup: map[string]Ref,
+	keyword:       map[string]u16,
+	keyword_count: u16,
 }
 
 Room :: struct {
@@ -176,6 +187,9 @@ game_init :: proc(channels: shared.Channels) {
 	sparse_set_init(&g_mem.exit, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	soa_set_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	g_mem.parent = make([dynamic]Ref, MAX_ENTITY_ID, MAX_ENTITY_ID)
+
+	g_mem.keyword = make(map[string]u16)
+	g_mem.keyword_count = 1
 
 	// hierarchy has a special init step b/c we want to avoid using nulls for now
 	sentinel := &g_mem.hierarchy.dense[0]
@@ -608,6 +622,15 @@ exit_get :: proc(exits: ^Exitable, direction: Direction) -> (^ExitData, bool) {
 	return exit_data, true
 }
 
+exit_find_by_to_ref :: proc(exits: ^Exitable, ref: Ref) -> (^ExitData, bool) {
+	for &exit_data in exits.exit_list_sorted {
+		if exit_data.to_ref == ref {
+			return &exit_data, true
+		}
+	}
+	return nil, false
+}
+
 is_player :: proc(g_mem: GameMem, id: Id) -> bool {
 	if int(id) >= len(g_mem.player.sparse) do return false
 	return g_mem.player.sparse[id] > 0
@@ -620,7 +643,7 @@ room_new :: proc(g_mem: ^GameMem, room: Room) -> Ref {
 	exits := Exitable{}
 	append(&exits.exit_list_sorted, ExitData{})
 	prop_add(g_mem, ref, hierarchy)
-	prop_add(g_mem, ref, Show{room.name, room.short, room.long})
+	prop_add(g_mem, ref, Show{name = room.name, short = room.short, long = room.long})
 	prop_add(g_mem, ref, exits)
 	return ref
 }
@@ -637,4 +660,35 @@ player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 
 update_game_ref :: #force_inline proc(conn_ref: ConnRef, game_ref: Ref) {
 	chan.send(output_channel, UserOutput{conn_ref = conn_ref, game_ref = game_ref})
+}
+
+keyword_id :: proc(kw: string) -> u16 {
+	keyword := g_mem.keyword
+	if id, ok := keyword[kw]; ok {
+		return id
+	}
+	id := g_mem.keyword_count
+	assert(id <= max(u16))
+	keyword[kw] = id
+	g_mem.keyword_count += 1
+	return id
+}
+
+keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> MatchResult {
+	found_count := 0
+
+	for term in search_terms {
+		_, found := slice.linear_search(in_keywords, term)
+		if found {
+			found_count += 1
+		}
+	}
+
+	if found_count == 0 {
+		return .Reject
+	}
+	if found_count == len(search_terms) {
+		return .Match
+	}
+	return .Suggestion
 }
