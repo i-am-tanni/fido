@@ -129,7 +129,7 @@ sparse_set_to_iter :: proc(sparse_set: ^SparseSet($T)) -> SparseSetIter(T) {
 	return {index = 1, data = sparse_set.dense[:]}
 }
 
-sparse_set_iterator :: proc(it: ^SparseSetIter($T)) -> (val: DenseSlot(T), idx: int, cond: bool) {
+sparse_set_next :: proc(it: ^SparseSetIter($T)) -> (val: DenseSlot(T), idx: int, cond: bool) {
 	cond = it.index < len(it.data)
 
 	for ; cond; cond = it.index < len(it.data) {

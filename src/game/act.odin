@@ -17,8 +17,8 @@ direction_to_string := [Direction]string {
 do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-	player, i, is_player := soa_set_get(&g_mem.player, self_id)
-	if is_player {
+	player, i, actor_is_player := soa_set_get(&g_mem.player, self_id)
+	if actor_is_player {
 		buf, err := new([4096]byte, context.temp_allocator)
 		if err != nil do return false
 		sb := strings.builder_from_bytes(buf[:])
@@ -32,6 +32,37 @@ do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 		write_children(&sb, g_mem, contents, self_id)
 		write_prompt(&sb, g_mem, self_id)
 		output1(strings.to_string(sb), player[i].conn_ref)
+		return true
+	}
+
+	return true
+}
+
+do_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
+	self_id := deref(g_mem, event.actor) or_return
+	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+	player, i, actor_is_player := soa_set_get(&g_mem.player, self_id)
+
+	keyword_ids: [dynamic; 4]u16
+	search := string_to_kw_ids(&g_mem.keyword, event.keywords, &keyword_ids)
+	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
+	// count number of recipients that are not the player
+	players := make([dynamic]ConnRef, context.temp_allocator)
+	it := to_child_iter(room_contents.first_kid, self_id)
+	for child in next_child(&it) {
+		show, has_show := sparse_set_get_ptr(&g_mem.show, child)
+		if !has_show do continue
+		match_ok := keyword_match(search, show.keyword[:])
+		if !match_ok do continue
+		if actor_is_player {
+			buf, err := new([4096]byte, context.temp_allocator)
+			assert(err == nil)
+			sb := strings.builder_from_bytes(buf[:])
+			write_string_ln(&sb, show.name)
+			write_string_ln(&sb, show.long)
+			write_prompt(&sb, g_mem, self_id)
+			output1(strings.to_string(sb), player[i].conn_ref)
+		}
 	}
 
 	return true
@@ -130,26 +161,13 @@ write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, obs
 
 write_children :: proc(sb: ^strings.Builder, g_mem: ^GameMem, contents: ^Hierarchy, observer: Id) {
 	clean_up_list := make([dynamic]Id, context.temp_allocator)
-	start := contents.first_kid
-	// loop condition omitted cuz this is equivalent to a do-while
-	for current := start;; current = current.next_sib {
-		child_id, ref_ok := deref(g_mem, current.ref)
-		if ref_ok && child_id != observer {
-			child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child_id)
-			if ref_ok && show_ok {
-				strings.write_string(sb, "  ")
-				write_string_ln(sb, child_show.short)
-			} else {
-				append(&clean_up_list, current.ref.id)
-			}
+	it := to_child_iter(contents.first_kid, observer)
+	for child in next_child(&it) {
+		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
+		if show_ok {
+			strings.write_string(sb, "  ")
+			write_string_ln(sb, child_show.short)
 		}
-
-		if current.next_sib == start do break
-	}
-
-	// clean up any invalid children
-	for id in clean_up_list {
-		child_rmv(g_mem, id)
 	}
 }
 

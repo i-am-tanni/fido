@@ -99,7 +99,7 @@ Show :: struct {
 	name:    string,
 	short:   string,
 	long:    string,
-	keyword: [8]u16,
+	keyword: [dynamic; 8]u16,
 }
 
 Health :: struct {
@@ -152,6 +152,7 @@ Recipient :: struct {
 
 Event :: union {
 	Ev_Look,
+	Ev_Look_At,
 	Ev_Say,
 	Ev_Move,
 }
@@ -159,6 +160,12 @@ Event :: union {
 Ev_Look :: struct {
 	actor: Ref,
 	room:  Ref,
+}
+
+Ev_Look_At :: struct {
+	actor:    Ref,
+	room:     Ref,
+	keywords: string,
 }
 
 Ev_Say :: struct {
@@ -170,6 +177,15 @@ Ev_Say :: struct {
 Ev_Move :: struct {
 	actor:        Ref,
 	exit_keyword: Direction,
+}
+
+Child_Iter :: struct {
+	start:        ^Hierarchy,
+	current:      ^Hierarchy,
+	clean_up:     [dynamic]Id,
+	exclude:      Id,
+	has_more:     bool,
+	is_exclusive: bool,
 }
 
 @(export)
@@ -282,10 +298,12 @@ process_game_events :: proc(g_mem: ^GameMem) {
 		switch val in event {
 		case Ev_Look:
 			do_look(g_mem, val)
-		case Ev_Say:
-			do_say(g_mem, val)
 		case Ev_Move:
 			do_move(g_mem, val)
+		case Ev_Look_At:
+			do_look_at(g_mem, val)
+		case Ev_Say:
+			do_say(g_mem, val)
 		}
 	}
 }
@@ -654,7 +672,16 @@ player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 	hierarchy.ref = ref
 	prop_add(g_mem, ref, hierarchy)
 	prop_add(g_mem, ref, player)
-	prop_add(g_mem, ref, Show{short = "A player is here.", long = "", name = "Player"})
+	prop_add(
+		g_mem,
+		ref,
+		Show {
+			short = "A player is here.",
+			long = "",
+			name = "Player",
+			keyword = {keyword_insert("player")},
+		},
+	)
 	return ref
 }
 
@@ -662,7 +689,7 @@ update_game_ref :: #force_inline proc(conn_ref: ConnRef, game_ref: Ref) {
 	chan.send(output_channel, UserOutput{conn_ref = conn_ref, game_ref = game_ref})
 }
 
-keyword_id :: proc(kw: string) -> u16 {
+keyword_insert :: proc(kw: string) -> u16 {
 	keyword := g_mem.keyword
 	if id, ok := keyword[kw]; ok {
 		return id
@@ -674,8 +701,12 @@ keyword_id :: proc(kw: string) -> u16 {
 	return id
 }
 
-keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> MatchResult {
+keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> bool {
 	found_count := 0
+
+	if len(in_keywords) == 0 {
+		return false
+	}
 
 	for term in search_terms {
 		_, found := slice.linear_search(in_keywords, term)
@@ -684,11 +715,56 @@ keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> MatchResult {
 		}
 	}
 
-	if found_count == 0 {
-		return .Reject
-	}
 	if found_count == len(search_terms) {
-		return .Match
+		return true
 	}
-	return .Suggestion
+
+	return false
+}
+
+// Converts space-separated keywords to lookup IDs.
+string_to_kw_ids :: proc(lookup: ^map[string]u16, s: string, list: ^[dynamic; 4]u16) -> []u16 {
+	split, alloc_err := strings.fields(s, context.temp_allocator)
+	assert(alloc_err == nil)
+	// convert keywords to lookup ids
+	for kw in split {
+		if len(list) == cap(list) do break
+		id := lookup[kw] or_continue
+		append(list, id)
+	}
+	return list[:]
+}
+
+to_child_iter :: proc(start: ^Hierarchy, exclude: Id) -> Child_Iter {
+	return Child_Iter {
+		start = start,
+		current = start,
+		clean_up = make([dynamic]Id, context.temp_allocator),
+		exclude = exclude,
+		has_more = start != nil && start.ref.id > 0,
+	}
+}
+
+next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
+	for {
+		if !it.has_more {
+			// clean up any invalid children
+			for id in it.clean_up {
+				child_rmv(g_mem, id)
+			}
+			return 0, false
+		}
+
+		child := it.current
+		child_id, ref_ok := deref(g_mem, child.ref)
+		it.current = child.next_sib
+		it.has_more = child.next_sib != it.start
+		if !ref_ok && child_id > 0 {
+			append(&it.clean_up, child_id)
+			continue
+		}
+		if child_id != it.exclude {
+			return child_id, true
+		}
+	}
 }
