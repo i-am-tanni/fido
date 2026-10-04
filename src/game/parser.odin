@@ -21,6 +21,7 @@ ParsedCommand :: enum {
 	Cmd_Go_South,
 	Cmd_Go_East,
 	Cmd_Go_West,
+	Cmd_Look_At,
 	Cmd_Say,
 	Cmd_Chat,
 }
@@ -73,6 +74,13 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 			room    = g_mem.parent[self_id],
 			text    = parsed.args,
 		}
+	case .Cmd_Look_At:
+		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+		ev = Ev_Look_At {
+			actor    = input.game_ref,
+			room     = g_mem.parent[self_id],
+			keywords = parsed.args,
+		}
 
 	case .Cmd_Chat:
 		do_chat(g_mem, input, parsed.args)
@@ -122,6 +130,10 @@ str_to_command :: proc(text: string) -> (command: ParsedCommand, ok: bool) {
 	}
 
 	switch (text[0]) {
+	case 'l':
+		if text == "l" || text == "look" {
+			return .Cmd_Look_At, true
+		}
 	case 'c':
 		if text == "chat" {
 			return .Cmd_Chat, true

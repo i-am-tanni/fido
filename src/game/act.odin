@@ -48,12 +48,12 @@ do_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 	// count number of recipients that are not the player
 	players := make([dynamic]ConnRef, context.temp_allocator)
-	it := to_child_iter(room_contents.first_kid, self_id)
+	it := to_child_iter(room_contents.first_kid)
 	for child in next_child(&it) {
 		show, has_show := sparse_set_get_ptr(&g_mem.show, child)
-		if !has_show do continue
-		match_ok := keyword_match(search, show.keyword[:])
-		if !match_ok do continue
+		if !has_show || !keyword_match(search, show.keyword[:]) {
+			continue
+		}
 		if actor_is_player {
 			buf, err := new([4096]byte, context.temp_allocator)
 			assert(err == nil)

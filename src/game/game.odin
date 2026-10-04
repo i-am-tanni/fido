@@ -735,7 +735,7 @@ string_to_kw_ids :: proc(lookup: ^map[string]u16, s: string, list: ^[dynamic; 4]
 	return list[:]
 }
 
-to_child_iter :: proc(start: ^Hierarchy, exclude: Id) -> Child_Iter {
+to_child_iter :: proc(start: ^Hierarchy, exclude: Id = 0) -> Child_Iter {
 	return Child_Iter {
 		start = start,
 		current = start,
