@@ -423,9 +423,6 @@ entity_rmv_hard :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	}
 	sparse_set_remove(&g_mem.entity, ref.id)
 	queue.push_back(&g_mem.free_list, ref.id)
-	for prop in entity.property_set {
-		prop_rmv(g_mem, ref, prop)
-	}
 	return true
 }
 
@@ -476,7 +473,7 @@ prop_rmv :: proc(g_mem: ^GameMem, ref: Ref, property: Property) -> bool {
 	}
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
 	if !ok do return false
-	slot.property_set |= {property}
+	slot.property_set &~= {property}
 
 	return true
 }

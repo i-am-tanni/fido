@@ -90,6 +90,12 @@ sparse_set_try_insert :: proc(
 	is_ok: bool,
 ) {
 	assert(id > INVALID_INDEX)
+	// if id already exists...update
+	if idx := sparse_set.sparse[id]; idx > 0 {
+		slot = &sparse_set.dense[idx]
+		slot^ = data
+		return slot, true
+	}
 	if len(sparse_set.sparse) <= int(id) {
 		resize(&sparse_set.sparse, int(id) + 1)
 	}
