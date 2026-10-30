@@ -743,7 +743,7 @@ to_child_iter :: proc(start: ^Hierarchy, exclude: Id = 0) -> Child_Iter {
 }
 
 next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
-	for !it.has_more {
+	for it.has_more {
 		child := it.current
 		child_id, ref_ok := deref(g_mem, child.ref)
 		it.current = child.next_sib
