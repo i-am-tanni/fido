@@ -743,15 +743,7 @@ to_child_iter :: proc(start: ^Hierarchy, exclude: Id = 0) -> Child_Iter {
 }
 
 next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
-	for {
-		if !it.has_more {
-			// clean up any invalid children
-			for id in it.clean_up {
-				child_rmv(g_mem, id)
-			}
-			return 0, false
-		}
-
+	for !it.has_more {
 		child := it.current
 		child_id, ref_ok := deref(g_mem, child.ref)
 		it.current = child.next_sib
@@ -764,4 +756,10 @@ next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
 			return child_id, true
 		}
 	}
+
+	// clean up any invalid children
+	for id in it.clean_up {
+		child_rmv(g_mem, id)
+	}
+	return 0, false
 }
