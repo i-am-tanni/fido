@@ -720,8 +720,13 @@ keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> bool {
 }
 
 // Converts space-separated keywords to lookup IDs.
-string_to_kw_ids :: proc(lookup: ^map[string]u16, s: string, list: ^[dynamic; 4]u16) -> []u16 {
-	split, alloc_err := strings.fields(s, context.temp_allocator)
+string_to_kw_ids :: proc(
+	lookup: ^map[string]u16,
+	s: string,
+	list: ^[dynamic; 4]u16,
+	allocator: runtime.Allocator = context.temp_allocator,
+) -> []u16 {
+	split, alloc_err := strings.fields(s, allocator)
 	assert(alloc_err == nil)
 	// convert keywords to lookup ids
 	for kw in split {
@@ -732,11 +737,15 @@ string_to_kw_ids :: proc(lookup: ^map[string]u16, s: string, list: ^[dynamic; 4]
 	return list[:]
 }
 
-to_child_iter :: proc(start: ^Hierarchy, exclude: Id = 0) -> Child_Iter {
+to_child_iter :: proc(
+	start: ^Hierarchy,
+	exclude: Id = 0,
+	allocator: runtime.Allocator = context.temp_allocator,
+) -> Child_Iter {
 	return Child_Iter {
 		start = start,
 		current = start,
-		clean_up = make([dynamic]Id, context.temp_allocator),
+		clean_up = make([dynamic]Id, allocator),
 		exclude = exclude,
 		has_more = start != nil && start.ref.id > 0,
 	}
