@@ -46,15 +46,15 @@ do_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
 	keyword_ids: [dynamic; 4]u16
 	search := string_to_kw_ids(&g_mem.keyword, event.keywords, &keyword_ids)
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
-	// count number of recipients that are not the player
-	players := make([dynamic]ConnRef, context.temp_allocator)
 	it := to_child_iter(room_contents.first_kid)
-	if actor_is_player {
-		for child in next_child(&it) {
-			show, has_show := sparse_set_get_ptr(&g_mem.show, child)
-			if !has_show || !keyword_match(search, show.keyword[:]) {
-				continue
-			}
+	if !actor_is_player {
+		// NPC logic
+		return true
+	}
+	// player logic
+	for child in next_child(&it) {
+		show := sparse_set_get_ptr(&g_mem.show, child) or_continue
+		if keyword_match(search, show.keyword[:]) {
 			buf, err := new([4096]byte, context.temp_allocator)
 			assert(err == nil)
 			sb := strings.builder_from_bytes(buf[:])
@@ -62,11 +62,10 @@ do_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
 			write_string_ln(&sb, show.long)
 			write_prompt(&sb, g_mem, self_id)
 			output1(strings.to_string(sb), player[i].conn_ref)
+			break
 		}
 	}
-
 	return true
-
 }
 
 do_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
@@ -164,11 +163,9 @@ write_children :: proc(sb: ^strings.Builder, g_mem: ^GameMem, contents: ^Hierarc
 	clean_up_list := make([dynamic]Id, context.temp_allocator)
 	it := to_child_iter(contents.first_kid, observer)
 	for child in next_child(&it) {
-		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
-		if show_ok {
-			strings.write_string(sb, "  ")
-			write_string_ln(sb, child_show.short)
-		}
+		child_show := sparse_set_get_ptr(&g_mem.show, child) or_continue
+		strings.write_string(sb, "  ")
+		write_string_ln(sb, child_show.short)
 	}
 }
 
