@@ -132,6 +132,7 @@ GameMem :: struct {
 	player_lookup: map[string]Ref,
 	keyword:       map[string]u16,
 	keyword_count: u16,
+	clean_up:      [dynamic]Ref,
 }
 
 Room :: struct {
@@ -238,6 +239,9 @@ game_update :: proc() -> bool {
 	defer if wake_up {
 		nbio.wake_up(network_loop)
 	}
+
+	g_mem.clean_up = make([dynamic]Ref, context.temp_allocator)
+
 	for {
 		event, event_ok := chan.try_recv(input_channel)
 		if !event_ok {
@@ -269,7 +273,14 @@ game_update :: proc() -> bool {
 	}
 
 	process_game_events(g_mem)
+
+	// entity clean up is done at the 'frame' / pulse boundary
+	for ref in g_mem.clean_up {
+		entity_rmv_hard(g_mem, ref)
+	}
+
 	free_all(context.temp_allocator)
+
 	return true
 }
 
@@ -378,6 +389,12 @@ deref :: proc(state: ^GameMem, ref: Ref) -> (id: Id, is_valid: bool) {
 	if ref.id == INVALID_INDEX do return
 	entity := sparse_set_get_ptr(&state.entity, ref.id) or_return
 	return ref.id, ref == entity.ref
+}
+
+is_ref_ok :: proc(state: ^GameMem, ref: Ref) -> bool {
+	if ref.id == INVALID_INDEX do return false
+	entity := sparse_set_get_ptr(&state.entity, ref.id) or_return
+	return ref == entity.ref
 }
 
 entity_new_assign_id :: proc(g_mem: ^GameMem) -> Ref {

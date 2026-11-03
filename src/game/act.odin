@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:strings"
 
 CRLF :: "\r\n"
-unknown_cmd :: "Huh?\r\n"
 
 direction_to_string := [Direction]string {
 	.Dir_None  = "None",
@@ -98,10 +97,11 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 
 	player, i, is_player := soa_set_get(&g_mem.player, self_id)
 	if is_player {
+		// p1 = 1st person
 		p1_msg := fmt.tprintf("You say, \"{0}\"", event.text)
 		output1(p1_msg, player[i].conn_ref)
 	}
-
+	// p3 = third person
 	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
 	room_id := deref(g_mem, event.room) or_return
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
@@ -134,8 +134,7 @@ write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, obs
 	for i in 1 ..< len(exit_list_sorted) {
 		exit := &exit_list_sorted[i]
 		// exclude and clean up exits with bad references
-		_, ok := deref(g_mem, exit.to_ref)
-		if _, ok := deref(g_mem, exit.to_ref); !ok {
+		if !is_ref_ok(g_mem, exit.to_ref) {
 			exit.is_deleted = true
 			exit_clean_up = true
 			continue
