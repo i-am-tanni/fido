@@ -18,7 +18,7 @@ SparseSet :: struct($T: typeid) {
 }
 
 // An SoA Sparse-Dense Array
-SoaSet :: struct($T: typeid) {
+SoaPool :: struct($T: typeid) {
 	// note: index 0 is sentinel
 	// We use a reverse_idx to find the last slot id for unordered removes
 	// The reason we cannot replace reverse_idx with simply an ID is once a
@@ -38,7 +38,7 @@ SparseSetIter :: struct($T: typeid) {
 }
 
 // Iterator for an SoA Sparse-Dense Array
-SoASparseSetIter :: struct($T: typeid) {
+SoaPoolIter :: struct($T: typeid) {
 	index: int,
 	data:  #soa[]DenseSlot(T),
 }
@@ -61,14 +61,14 @@ sparse_set_init :: proc(
 	}
 }
 
-soa_set_init :: proc(
-	sparse_set: ^SoaSet($T),
+soa_pool_init :: proc(
+	sparse_set: ^SoaPool($T),
 	max_id: u32,
 	dense_cap: u32,
 	allocator: runtime.Allocator = context.allocator,
 ) {
 	// len starts at 1 for a sentinel index
-	sparse_set^ = SoaSet(T) {
+	sparse_set^ = SoaPool(T) {
 		dense  = make(#soa[dynamic]T, 1, dense_cap, allocator),
 		sparse = make([dynamic]u32, max_id, allocator),
 		id     = make([dynamic]Id, 1, allocator),
@@ -147,41 +147,41 @@ sparse_set_next :: proc(it: ^SparseSetIter($T)) -> (val: DenseSlot(T), idx: int,
 	return
 }
 
-soa_set_get :: proc(
-	soa_set: ^SoaSet($T),
+soa_pool_get :: proc(
+	soa_pool: ^SoaPool($T),
 	id: Id,
 ) -> (
 	dense: ^#soa[dynamic]T,
 	index: u32,
 	ok: bool,
 ) {
-	index = soa_set.sparse[u32(id)]
+	index = soa_pool.sparse[u32(id)]
 	ok = index > 0
-	if (ok) do dense = &soa_set.dense
+	if (ok) do dense = &soa_pool.dense
 	return
 }
 
-soa_set_index :: proc(soa_set: ^SoaSet($T), id: Id) -> (index: u32, ok: bool) {
-	index = soa_set.sparse[u32(id)]
+soa_pool_index :: proc(soa_pool: ^SoaPool($T), id: Id) -> (index: u32, ok: bool) {
+	index = soa_pool.sparse[u32(id)]
 	ok = index > 0
 	return
 }
 
-soa_set_insert :: proc(soa_set: ^SoaSet($T), id: Id, data: T) {
+soa_pool_insert :: proc(soa_pool: ^SoaPool($T), id: Id, data: T) {
 	assert(id > INVALID_INDEX)
-	if id := int(id); len(soa_set.sparse) <= id {
-		resize(&soa_set.sparse, id + 1)
+	if id := int(id); len(soa_pool.sparse) <= id {
+		resize(&soa_pool.sparse, id + 1)
 	}
-	index := len(soa_set.dense)
-	soa_set.sparse[id] = u32(index)
-	append(&soa_set.dense, data)
-	append(&soa_set.id, id)
+	index := len(soa_pool.dense)
+	soa_pool.sparse[id] = u32(index)
+	append(&soa_pool.dense, data)
+	append(&soa_pool.id, id)
 }
 
-soa_set_remove :: proc(soa_set: ^SoaSet($T), removed_id: Id) {
+soa_pool_remove :: proc(soa_pool: ^SoaPool($T), removed_id: Id) {
 	assert(removed_id > INVALID_INDEX)
-	removed_index := soa_set.sparse[removed_id]
-	len := len(soa_set.dense)
+	removed_index := soa_pool.sparse[removed_id]
+	len := len(soa_pool.dense)
 	assert(len > 1, "sparse_set array is empty!")
 	last_index := u32(len - 1)
 
@@ -189,10 +189,10 @@ soa_set_remove :: proc(soa_set: ^SoaSet($T), removed_id: Id) {
 		// swap sparse id index lookup if not last
 		// because the unordered remove will change the dense
 		// index for the last id
-		last_id := soa_set.id[last_index]
-		soa_set.sparse[last_id] = removed_index
+		last_id := soa_pool.id[last_index]
+		soa_pool.sparse[last_id] = removed_index
 	}
-	soa_set.sparse[removed_id] = 0
-	unordered_remove_soa(&soa_set.dense, removed_index)
-	unordered_remove(&soa_set.sparse, removed_index)
+	soa_pool.sparse[removed_id] = 0
+	unordered_remove_soa(&soa_pool.dense, removed_index)
+	unordered_remove(&soa_pool.sparse, removed_index)
 }

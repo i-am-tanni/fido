@@ -128,7 +128,7 @@ GameMem :: struct {
 	show:          SparseSet(Show),
 	health:        SparseSet(Health),
 	exit:          SparseSet(Exitable),
-	player:        SoaSet(Player),
+	player:        SoaPool(Player),
 	player_lookup: map[string]Ref,
 	keyword:       map[string]u16,
 	keyword_count: u16,
@@ -201,7 +201,7 @@ game_init :: proc(channels: shared.Channels) {
 	sparse_set_init(&g_mem.hierarchy, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.show, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.exit, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
-	soa_set_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
+	soa_pool_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	g_mem.parent = make([dynamic]Ref, MAX_ENTITY_ID, MAX_ENTITY_ID)
 
 	g_mem.keyword = make(map[string]u16)
@@ -345,7 +345,7 @@ output1 :: proc(str: string, conn_ref: ConnRef) {
 // Looks up the conn_ref.
 output1_via_ref :: proc(g_mem: ^GameMem, ref: Ref, str: string) -> bool {
 	id := deref(g_mem, ref) or_return
-	dense, index := soa_set_get(&g_mem.player, id) or_return
+	dense, index := soa_pool_get(&g_mem.player, id) or_return
 	output1(str, dense[index].conn_ref)
 	return true
 }
@@ -428,7 +428,7 @@ entity_rmv_soft :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	for prop in entity.property_set {
 		prop_rmv(g_mem, ref, prop)
 	}
-	if players, i, is_conn := soa_set_get(&g_mem.player, id); is_conn {
+	if players, i, is_conn := soa_pool_get(&g_mem.player, id); is_conn {
 		conn := players[i].conn_ref
 		for topic in entity.subscriptions {
 			ch_unsubscribe(g_mem, id, conn, topic)
@@ -443,7 +443,7 @@ entity_rmv_hard :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	for prop in entity.property_set {
 		prop_rmv(g_mem, ref, prop)
 	}
-	if players, i, is_conn := soa_set_get(&g_mem.player, id); is_conn {
+	if players, i, is_conn := soa_pool_get(&g_mem.player, id); is_conn {
 		conn := players[i].conn_ref
 		for topic in entity.subscriptions {
 			ch_unsubscribe(g_mem, id, conn, topic)
@@ -473,7 +473,7 @@ prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 	case Exitable:
 		sparse_set_try_insert(&g_mem.exit, id, val)
 	case Player:
-		soa_set_insert(&g_mem.player, id, val)
+		soa_pool_insert(&g_mem.player, id, val)
 	}
 
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -496,7 +496,7 @@ prop_rmv :: proc(g_mem: ^GameMem, ref: Ref, property: Property) -> bool {
 	case .Exitable:
 		sparse_set_remove(&g_mem.exit, id)
 	case .Player:
-		soa_set_remove(&g_mem.player, id)
+		soa_pool_remove(&g_mem.player, id)
 	case .None: // do nothing
 	}
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -804,7 +804,7 @@ next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
 
 ch_subscribe :: proc(g_mem: ^GameMem, id: Id, topic: Ch_Topic) -> bool {
 	entity := sparse_set_get_ptr(&g_mem.entity, id) or_return
-	player, i := soa_set_get(&g_mem.player, id) or_return
+	player, i := soa_pool_get(&g_mem.player, id) or_return
 	if topic in entity.subscriptions {
 		// err already subscribed	
 		return false

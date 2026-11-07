@@ -16,7 +16,7 @@ direction_to_string := [Direction]string {
 do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-	player, i, actor_is_player := soa_set_get(&g_mem.player, self_id)
+	player, i, actor_is_player := soa_pool_get(&g_mem.player, self_id)
 	if actor_is_player {
 		buf, err := new([4096]byte, context.temp_allocator)
 		if err != nil do return false
@@ -40,7 +40,7 @@ do_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 do_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-	player, i, actor_is_player := soa_set_get(&g_mem.player, self_id)
+	player, i, actor_is_player := soa_pool_get(&g_mem.player, self_id)
 
 	keyword_ids: [dynamic; 4]u16
 	search := string_to_kw_ids(&g_mem.keyword, event.keywords, &keyword_ids)
@@ -98,7 +98,7 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	self_id := deref(g_mem, event.speaker) or_return
 	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
 
-	player, i, is_player := soa_set_get(&g_mem.player, self_id)
+	player, i, is_player := soa_pool_get(&g_mem.player, self_id)
 	if is_player {
 		// p1 = 1st person
 		p1_msg := fmt.tprintf("You say, \"{0}\"{1}", event.text, CRLF)
@@ -113,7 +113,7 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	it := to_child_iter(room_contents.first_kid)
 	for child in next_child(&it) {
 		if child != self_id {
-			index, is_player := soa_set_index(&g_mem.player, child)
+			index, is_player := soa_pool_index(&g_mem.player, child)
 			if is_player {
 				append(&players, player[index].conn_ref)
 			}
