@@ -96,7 +96,7 @@ publish :: proc(g_mem: ^GameMem, topic: Ch_Topic, ref: Ref, msg: string) -> bool
 
 do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	self_id := deref(g_mem, event.speaker) or_return
-	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
+	show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
 
 	player, i, is_player := soa_pool_get(&g_mem.player, self_id)
 	if is_player {
