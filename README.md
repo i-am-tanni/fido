@@ -21,19 +21,20 @@ Output uses backing blocks in a similar fashion when crossing thread boundaries.
 
 ⚠️ **Please Note:** This project is incomplete and **very early stages** of development.
 
-## About Me
-
-I'm a hobbyist that got into programming muds in the early 00s.
-
 ## Main Features
 
 - Non blocking IO on the network thread
 - Hot reloading of all game code that runs in the game thread
 - Game state is semi-ECS where components (called properties here) are represented as sparse sets
-- Containers and room contents are represented as something akin to a left kid right sib (LCRS) tree
+- Containers and room contents are represented as something like a left kid right sib (LCRS) tree backed by an array.
 
 
 ## What's been added?
 
 - Basic comms: channels of various topics via a pubsub system, says in a room
 - Basic navigation from room to room via exits
+
+## About Me
+
+I'm a hobbyist that got into programming muds in the early 00s.
+
