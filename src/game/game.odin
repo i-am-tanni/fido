@@ -51,9 +51,15 @@ Property :: enum {
 
 PropertySet :: bit_set[Property]
 
+// chat and notification channels
+Ch_Topic :: enum {
+	Ch_General,
+}
+
 Entity :: struct {
-	ref:          Ref,
-	property_set: PropertySet,
+	ref:           Ref,
+	property_set:  PropertySet,
+	subscriptions: bit_set[Ch_Topic],
 }
 
 Direction :: enum {
@@ -80,14 +86,8 @@ PropertyData :: union {
 	Player,
 }
 
-MatchResult :: enum {
-	Reject,
-	Suggestion,
-	Match,
-}
-
-
 // A cyclical double-linked list for nesting entities
+// built on top of an array
 Hierarchy :: struct {
 	ref:       Ref,
 	first_kid: ^Hierarchy,
@@ -121,8 +121,8 @@ Player :: struct {
 GameMem :: struct {
 	entity:        SparseSet(Entity),
 	event_queue:   queue.Queue(Event),
-	// list of available ids for recycling
 	free_list:     queue.Queue(Id),
+	// list of entity ids available for recycling
 	hierarchy:     SparseSet(Hierarchy),
 	parent:        [dynamic]Ref,
 	show:          SparseSet(Show),
@@ -132,7 +132,10 @@ GameMem :: struct {
 	player_lookup: map[string]Ref,
 	keyword:       map[string]u16,
 	keyword_count: u16,
+	// list of entities to retire
 	clean_up:      [dynamic]Ref,
+	// subscribers to channel topics (unrelated to concurrency channels)
+	channel:       [Ch_Topic][dynamic; 256]ConnRef,
 }
 
 Room :: struct {
@@ -142,10 +145,15 @@ Room :: struct {
 	id:    Id,
 }
 
-Recipient :: struct {
-	conn_ref: ConnRef,
-	game_ref: Ref,
+Child_Iter :: struct {
+	start:        ^Hierarchy,
+	current:      ^Hierarchy,
+	clean_up:     [dynamic]Id,
+	exclude:      Id,
+	has_more:     bool,
+	is_exclusive: bool,
 }
+
 
 ///
 /// Event Types
@@ -178,15 +186,6 @@ Ev_Say :: struct {
 Ev_Move :: struct {
 	actor:        Ref,
 	exit_keyword: Direction,
-}
-
-Child_Iter :: struct {
-	start:        ^Hierarchy,
-	current:      ^Hierarchy,
-	clean_up:     [dynamic]Id,
-	exclude:      Id,
-	has_more:     bool,
-	is_exclusive: bool,
 }
 
 @(export)
@@ -429,6 +428,12 @@ entity_rmv_soft :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	for prop in entity.property_set {
 		prop_rmv(g_mem, ref, prop)
 	}
+	if players, i, is_conn := soa_set_get(&g_mem.player, id); is_conn {
+		conn := players[i].conn_ref
+		for topic in entity.subscriptions {
+			ch_unsubscribe(g_mem, id, conn, topic)
+		}
+	}
 	return true
 }
 
@@ -437,6 +442,12 @@ entity_rmv_hard :: proc(g_mem: ^GameMem, ref: Ref) -> bool {
 	entity, _ := sparse_set_get_ptr(&g_mem.entity, id)
 	for prop in entity.property_set {
 		prop_rmv(g_mem, ref, prop)
+	}
+	if players, i, is_conn := soa_set_get(&g_mem.player, id); is_conn {
+		conn := players[i].conn_ref
+		for topic in entity.subscriptions {
+			ch_unsubscribe(g_mem, id, conn, topic)
+		}
 	}
 	sparse_set_remove(&g_mem.entity, ref.id)
 	queue.push_back(&g_mem.free_list, ref.id)
@@ -696,6 +707,7 @@ player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 			keyword = {keyword_insert("player")},
 		},
 	)
+	ch_subscribe(g_mem, ref.id, .Ch_General)
 	return ref
 }
 
@@ -788,4 +800,36 @@ next_child :: proc(it: ^Child_Iter) -> (child_id: Id, cond: bool) {
 		child_rmv(g_mem, id)
 	}
 	return 0, false
+}
+
+ch_subscribe :: proc(g_mem: ^GameMem, id: Id, topic: Ch_Topic) -> bool {
+	entity := sparse_set_get_ptr(&g_mem.entity, id) or_return
+	player, i := soa_set_get(&g_mem.player, id) or_return
+	if topic in entity.subscriptions {
+		// err already subscribed	
+		return false
+	}
+
+	append(&g_mem.channel[topic], player[i].conn_ref)
+	entity.subscriptions |= {topic}
+	return true
+}
+
+ch_unsubscribe :: proc(g_mem: ^GameMem, id: Id, conn: ConnRef, topic: Ch_Topic) -> bool {
+	entity := sparse_set_get_ptr(&g_mem.entity, id) or_return
+
+	if topic not_in entity.subscriptions {
+		return false
+	}
+
+	chan := g_mem.channel[topic]
+	for ref, i in chan {
+		if ref == conn {
+			unordered_remove(&chan, i)
+			break
+		}
+	}
+
+	entity.subscriptions -= {topic}
+	return true
 }

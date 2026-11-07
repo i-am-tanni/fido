@@ -77,17 +77,20 @@ do_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
 	return true
 }
 
-do_chat :: proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
-	self_id := deref(g_mem, event.game_ref) or_return
-	show, show_ok := sparse_set_get_ptr(&g_mem.show, self_id)
-	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
-	player := g_mem.player.dense
-	refs := make([]ConnRef, len(player), context.temp_allocator)
-	// start from 1 since 0 is INVALID_INDEX
-	for i := 1; i < len(player); i += 1 {
-		refs[i - 1] = player[i].conn_ref
+do_chat :: #force_inline proc(g_mem: ^GameMem, event: NetworkEvent, msg: string) -> bool {
+	return publish(g_mem, .Ch_General, event.game_ref, msg)
+}
+
+publish :: proc(g_mem: ^GameMem, topic: Ch_Topic, ref: Ref, msg: string) -> bool {
+	self_id := deref(g_mem, ref) or_return
+	entity := sparse_set_get_ptr(&g_mem.entity, self_id) or_return
+	if topic not_in entity.subscriptions {
+		output1_via_ref(g_mem, ref, "You are not subscribed to that channel.\r\n")
+		return true
 	}
-	output_n(chat_msg, refs[:])
+	show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
+	chat_msg := fmt.tprintf("{0}: {1}{2}", show.name, msg, CRLF)
+	output_n(chat_msg, g_mem.channel[topic][:])
 	return true
 }
 
@@ -98,29 +101,24 @@ do_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
 	player, i, is_player := soa_set_get(&g_mem.player, self_id)
 	if is_player {
 		// p1 = 1st person
-		p1_msg := fmt.tprintf("You say, \"{0}\"", event.text)
+		p1_msg := fmt.tprintf("You say, \"{0}\"{1}", event.text, CRLF)
 		output1(p1_msg, player[i].conn_ref)
 	}
 	// p3 = third person
-	p3_msg := fmt.tprintf("{0} says, \"{1}\"", show.name, event.text)
+	p3_msg := fmt.tprintf("{0} says, \"{1}\"{2}", show.name, event.text, CRLF)
 	room_id := deref(g_mem, event.room) or_return
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 
-	start := room_contents.first_kid
-	// count number of recipients that are not the player
 	players := make([dynamic]ConnRef, context.temp_allocator)
-
-	for current := start;; current = current.next_sib {
-		child_id, ref_ok := deref(g_mem, current.ref)
-		if child_id != self_id {
-			index, is_player := soa_set_index(&g_mem.player, child_id)
+	it := to_child_iter(room_contents.first_kid)
+	for child in next_child(&it) {
+		if child != self_id {
+			index, is_player := soa_set_index(&g_mem.player, child)
 			if is_player {
 				append(&players, player[index].conn_ref)
 			}
 		}
-		if current.next_sib == start do break
 	}
-
 	output_n(p3_msg, players[:])
 	return true
 }
