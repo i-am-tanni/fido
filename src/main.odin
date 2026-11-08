@@ -309,7 +309,7 @@ network_thread_proc :: proc() {
 			if len(output.msg) > 0 {
 				nbio.send_poly(
 					connection.socket,
-					{transmute([]byte)output.msg},
+					{transmute([]byte)output.msg, {telnet.TELNET_GA}},
 					connection,
 					on_sent,
 				)

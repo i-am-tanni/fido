@@ -13,6 +13,7 @@ TELNET_WILL :: 251
 TELNET_SB :: 250
 TELNET_SE :: 240
 TELNET_EOR :: 239
+TELNET_GA :: 249
 
 Telnet :: struct($T: typeid) {
 	// User data
