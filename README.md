@@ -26,15 +26,15 @@ Output uses backing blocks in a similar fashion when crossing thread boundaries.
 - Non blocking IO on the network thread
 - Hot reloading of all game code that runs in the game thread
 - Game state is semi-ECS where components (called properties here) are represented as sparse sets
-- Containers and room contents are represented as something like a left kid right sib (LCRS) tree backed by an array.
-
+- Entity hierarchies like containers, inventories, room contents are represented by a data structure
+    akin to a left kid right sub (LCRS) tree backed by an array.
 
 ## What's been added?
 
-- Basic comms: channels of various topics via a pubsub system, says in a room
+- Basic comms: chat channels by topic, room says
 - Basic navigation from room to room via exits
 
 ## About Me
 
-I'm a hobbyist that got into programming muds in the early 00s.
+I'm a hobbyist that got into programming via muds in the early 00s.
 

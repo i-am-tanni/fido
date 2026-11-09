@@ -127,10 +127,9 @@ write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, obs
 	exit_clean_up := false
 	strings.write_string(sb, "Obvious Exits: [")
 
-	exit_list_sorted := &exits.exit_list_sorted
 	// skip salient index
-	for i in 1 ..< len(exit_list_sorted) {
-		exit := &exit_list_sorted[i]
+	first := true
+	for &exit, i in exits.exit_list_sorted[1:] {
 		// exclude and clean up exits with bad references
 		if !is_ref_ok(g_mem, exit.to_ref) {
 			exit.is_deleted = true
@@ -138,17 +137,17 @@ write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, obs
 			continue
 		}
 		// write comma separated
-		if i > 1 {
+		if !first {
 			strings.write_string(sb, ", ")
 		}
+		first := false
 		strings.write_string(sb, direction_to_string[exit.direction])
 	}
 	write_string_ln(sb, "]")
 
 	if exit_clean_up {
 		// again, skip salient index
-		for i in 1 ..< len(exit_list_sorted) {
-			exit := &exit_list_sorted[i]
+		for &exit in exits.exit_list_sorted[1:] {
 			if exit.is_deleted {
 				exit_rmv(exits, exit.direction)
 			}

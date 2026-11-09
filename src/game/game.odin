@@ -9,7 +9,10 @@ import "core:slice"
 import "core:strings"
 import "core:sync/chan"
 
-// Shared types
+///
+/// Shared types
+///
+
 Ref :: shared.Ref
 ConnRef :: shared.ConnRef
 Id :: shared.Id
@@ -19,9 +22,16 @@ NetworkEvent :: shared.NetworkEvent
 UserOutput :: shared.UserOutput
 NetworkEventType :: shared.NetworkEventType
 
+///
+/// Constants
+///
+
 MAX_DIR_VAL :: int(max(Direction))
 MAX_ENTITY_ID :: 24
 INVALID_INDEX :: 0
+
+MAX_CH_SUBSCRIBERS :: 256
+SPAWN_ROOM :: Ref{1, 0}
 
 ///
 /// Globals
@@ -135,7 +145,7 @@ GameMem :: struct {
 	// list of entities to retire
 	clean_up:      [dynamic]Ref,
 	// subscribers to channel topics (unrelated to concurrency channels)
-	channel:       [Ch_Topic][dynamic; 256]ConnRef,
+	channel:       [Ch_Topic][dynamic; MAX_CH_SUBSCRIBERS]ConnRef,
 }
 
 Room :: struct {
@@ -259,10 +269,8 @@ game_update :: proc() -> bool {
 			ref := player_new(g_mem, Player{conn_ref = event.conn_ref})
 			// update game ref
 			update_game_ref(event.conn_ref, ref)
-			// move to room 1
-			spawn_room_ref := Ref{1, 0}
-			child_prepend(g_mem, spawn_room_ref, ref)
-			do_look(g_mem, Ev_Look{actor = ref, room = spawn_room_ref})
+			child_prepend(g_mem, SPAWN_ROOM, ref)
+			do_look(g_mem, Ev_Look{actor = ref, room = SPAWN_ROOM})
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
@@ -362,17 +370,17 @@ output_n :: proc(str: string, refs: []ConnRef) {
 	for pos := 0; pos < len; pos += bytes {
 		// shared block, which is read counted by the network thread
 		// to determine when to recycle
-		block, ok := chan.recv(blocks_out)
+		shared_block, ok := chan.recv(blocks_out)
 		assert(ok, "Output block could not be retrieved from return channel!")
 		bytes = min(len - pos, BLOCK_OUT_SIZE)
 		dummy_ref := Ref{}
-		copy(block[:bytes], str[pos:pos + bytes])
+		copy(shared_block[:bytes], str[pos:pos + bytes])
 
 		output := UserOutput {
 			num_recipients = u8(num_recipients),
-			msg            = string(block[:bytes]),
+			msg            = string(shared_block[:bytes]),
 			game_ref       = dummy_ref,
-			block          = block,
+			block          = shared_block,
 		}
 
 		for conn_ref in refs {
@@ -666,7 +674,7 @@ exit_get :: proc(exits: ^Exitable, direction: Direction) -> (^ExitData, bool) {
 }
 
 exit_find_by_to_ref :: proc(exits: ^Exitable, ref: Ref) -> (^ExitData, bool) {
-	for &exit_data in exits.exit_list_sorted {
+	for &exit_data in exits.exit_list_sorted[1:] {
 		if exit_data.to_ref == ref {
 			return &exit_data, true
 		}
