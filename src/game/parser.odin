@@ -83,7 +83,7 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 		}
 
 	case .Cmd_Chat:
-		do_chat(g_mem, input, parsed.args)
+		try_chat(g_mem, input, parsed.args)
 	}
 
 	queue.push_back(&g_mem.event_queue, ev)

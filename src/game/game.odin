@@ -56,10 +56,10 @@ Property :: enum {
 	Health,
 	Exitable,
 	Player,
+	Portable,
+	Anatomy,
 }
 
-
-PropertySet :: bit_set[Property]
 
 // chat and notification channels
 Ch_Topic :: enum {
@@ -68,7 +68,7 @@ Ch_Topic :: enum {
 
 Entity :: struct {
 	ref:           Ref,
-	property_set:  PropertySet,
+	property_set:  bit_set[Property],
 	subscriptions: bit_set[Ch_Topic],
 }
 
@@ -79,8 +79,6 @@ Direction :: enum {
 	Dir_East,
 	Dir_West,
 }
-
-DirSet :: bit_set[Direction]
 
 ExitData :: struct {
 	to_ref:     Ref,
@@ -94,6 +92,8 @@ PropertyData :: union {
 	Health,
 	Exitable,
 	Player,
+	Portable,
+	Anatomy,
 }
 
 // A cyclical double-linked list for nesting entities
@@ -106,10 +106,10 @@ Hierarchy :: struct {
 }
 
 Show :: struct {
+	keyword: [dynamic; 8]u16,
 	name:    string,
 	short:   string,
 	long:    string,
-	keyword: [dynamic; 8]u16,
 }
 
 Health :: struct {
@@ -128,6 +128,27 @@ Player :: struct {
 	conn_ref: ConnRef,
 }
 
+// a property of something that can be carried in inventory or put in a container
+Portable :: struct {}
+
+Eq_Flag :: enum {
+	Eq_Can_Carry,
+}
+
+Eq_Slot_Loc :: enum {
+	Eq_Main_Hand,
+}
+
+Eq_Slot :: struct {
+	type:     Eq_Slot_Loc,
+	equipped: Ref,
+	flags:    bit_set[Eq_Flag],
+}
+
+Anatomy :: struct {
+	eq_slots: [dynamic; 1]Eq_Slot,
+}
+
 GameMem :: struct {
 	entity:        SparseSet(Entity),
 	event_queue:   queue.Queue(Event),
@@ -138,10 +159,12 @@ GameMem :: struct {
 	show:          SparseSet(Show),
 	health:        SparseSet(Health),
 	exit:          SparseSet(Exitable),
+	portable:      SparseSet(Portable),
 	player:        SoaPool(Player),
 	player_lookup: map[string]Ref,
 	keyword:       map[string]u16,
 	keyword_count: u16,
+	anatomy:       SparseSet(Anatomy),
 	// list of entities to retire
 	clean_up:      [dynamic]Ref,
 	// subscribers to channel topics (unrelated to concurrency channels)
@@ -174,6 +197,7 @@ Event :: union {
 	Ev_Look_At,
 	Ev_Say,
 	Ev_Move,
+	Ev_Get,
 }
 
 Ev_Look :: struct {
@@ -198,6 +222,12 @@ Ev_Move :: struct {
 	exit_keyword: Direction,
 }
 
+Ev_Get :: struct {
+	actor:    Ref,
+	room:     Ref,
+	keywords: string,
+}
+
 @(export)
 game_init :: proc(channels: shared.Channels) {
 	g_mem = new(GameMem)
@@ -211,6 +241,7 @@ game_init :: proc(channels: shared.Channels) {
 	sparse_set_init(&g_mem.hierarchy, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.show, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.exit, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
+	sparse_set_init(&g_mem.portable, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	soa_pool_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	g_mem.parent = make([dynamic]Ref, MAX_ENTITY_ID, MAX_ENTITY_ID)
 
@@ -270,7 +301,7 @@ game_update :: proc() -> bool {
 			// update game ref
 			update_game_ref(event.conn_ref, ref)
 			child_prepend(g_mem, SPAWN_ROOM, ref)
-			do_look(g_mem, Ev_Look{actor = ref, room = SPAWN_ROOM})
+			try_look(g_mem, Ev_Look{actor = ref, room = SPAWN_ROOM})
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
@@ -315,13 +346,15 @@ process_game_events :: proc(g_mem: ^GameMem) {
 		event := queue.pop_front_safe(&g_mem.event_queue) or_break
 		switch val in event {
 		case Ev_Look:
-			do_look(g_mem, val)
+			try_look(g_mem, val)
 		case Ev_Move:
-			do_move(g_mem, val)
+			try_move(g_mem, val)
 		case Ev_Look_At:
-			do_look_at(g_mem, val)
+			try_look_at(g_mem, val)
 		case Ev_Say:
-			do_say(g_mem, val)
+			try_say(g_mem, val)
+		case Ev_Get:
+			try_get(g_mem, val)
 		}
 	}
 }
@@ -467,6 +500,15 @@ has_property :: #force_inline proc(g_mem: ^GameMem, id: Id, property: Property) 
 	return property in entity.property_set
 }
 
+has_properties :: #force_inline proc(
+	g_mem: ^GameMem,
+	id: Id,
+	properties: bit_set[Property],
+) -> bool {
+	entity, _ := sparse_set_get_ptr(&g_mem.entity, id)
+	return properties <= entity.property_set
+}
+
 prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 	id := deref(g_mem, ref) or_return
 	property := data_to_property(data)
@@ -482,6 +524,10 @@ prop_add :: proc(g_mem: ^GameMem, ref: Ref, data: PropertyData) -> bool {
 		sparse_set_try_insert(&g_mem.exit, id, val)
 	case Player:
 		soa_pool_insert(&g_mem.player, id, val)
+	case Portable:
+		sparse_set_try_insert(&g_mem.portable, id, val)
+	case Anatomy:
+		sparse_set_try_insert(&g_mem.anatomy, id, val)
 	}
 
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -505,6 +551,10 @@ prop_rmv :: proc(g_mem: ^GameMem, ref: Ref, property: Property) -> bool {
 		sparse_set_remove(&g_mem.exit, id)
 	case .Player:
 		soa_pool_remove(&g_mem.player, id)
+	case .Portable:
+		sparse_set_remove(&g_mem.portable, id)
+	case .Anatomy:
+		sparse_set_remove(&g_mem.anatomy, id)
 	case .None: // do nothing
 	}
 	slot, ok := sparse_set_get_ptr(&g_mem.entity, id)
@@ -526,6 +576,10 @@ data_to_property :: proc(data: PropertyData) -> Property {
 		return .Exitable
 	case Player:
 		return .Player
+	case Portable:
+		return .Portable
+	case Anatomy:
+		return .Anatomy
 	case:
 		return .None
 	}
@@ -619,15 +673,15 @@ child_append :: proc(g_mem: ^GameMem, parent_ref: Ref, child_ref: Ref) -> bool {
 	return true
 }
 
-exit_add :: proc(sparse_set: ^SparseSet(Exitable), id: Id, exit_data: ExitData) -> bool {
+exit_add :: proc(exits_by_entity: ^SparseSet(Exitable), id: Id, exit_data: ExitData) -> bool {
 	if exit_data.direction == .Dir_None do return false
-	data, ok := sparse_set_get_ptr(sparse_set, id)
+	data, ok := sparse_set_get_ptr(exits_by_entity, id)
 	// if exit property does not exist for this id
 	if !ok {
 		new := Exitable{}
 		append(&new.exit_list_sorted, ExitData{})
-		sparse_set_try_insert(sparse_set, id, new)
-		data, ok = sparse_set_get_ptr(sparse_set, id)
+		sparse_set_try_insert(exits_by_entity, id, new)
+		data, ok = sparse_set_get_ptr(exits_by_entity, id)
 	}
 
 	// since exits are sorted, search for index to inject
@@ -715,6 +769,13 @@ player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 			keyword = {keyword_insert("player")},
 		},
 	)
+	prop_add(
+		g_mem,
+		ref,
+		Anatomy {
+			eq_slots = {Eq_Slot{type = .Eq_Main_Hand, equipped = {}, flags = {.Eq_Can_Carry}}},
+		},
+	)
 	ch_subscribe(g_mem, ref.id, .Ch_General)
 	return ref
 }
@@ -762,7 +823,10 @@ string_to_kw_ids :: proc(
 	s: string,
 	list: ^[dynamic; 4]u16,
 	allocator: runtime.Allocator = context.temp_allocator,
-) -> []u16 {
+) -> (
+	slice: []u16,
+	keyword_ids_found: bool,
+) {
 	split, alloc_err := strings.fields(s, allocator)
 	assert(alloc_err == nil)
 	// convert keywords to lookup ids
@@ -771,7 +835,7 @@ string_to_kw_ids :: proc(
 		id := lookup[kw] or_continue
 		append(list, id)
 	}
-	return list[:]
+	return list[:], len(list) > 0
 }
 
 to_child_iter :: proc(
@@ -840,4 +904,9 @@ ch_unsubscribe :: proc(g_mem: ^GameMem, id: Id, conn: ConnRef, topic: Ch_Topic) 
 
 	entity.subscriptions -= {topic}
 	return true
+}
+
+ref_get :: proc(g_mem: ^GameMem, id: Id) -> (ref: Ref, ok: bool) {
+	entity := sparse_set_get_ptr(&g_mem.entity, id) or_return
+	return entity.ref, true
 }
