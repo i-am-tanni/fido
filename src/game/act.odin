@@ -28,7 +28,7 @@ Msg_Payload :: struct {
 	object_name:    string,
 }
 
-try_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
+try_look :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	// output to connection if available
@@ -48,11 +48,11 @@ try_look :: proc(g_mem: ^GameMem, event: Ev_Look) -> bool {
 	return true
 }
 
-try_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
+try_look_at :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
-	_, show, found := find_1_in_room(contents, event.keywords)
+	_, show, found := find_1_in_room(contents, event.args)
 	// output to connection if available
 	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
 		sb := string_builder(4096) or_return
@@ -65,13 +65,13 @@ try_look_at :: proc(g_mem: ^GameMem, event: Ev_Look_At) -> bool {
 	return true
 }
 
-try_move :: proc(g_mem: ^GameMem, event: Ev_Move) -> bool {
+try_move :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	exits := sparse_set_get_ptr(&g_mem.exit, room_id) or_return
 	exit_data := exit_get(exits, event.exit_keyword) or_return
 	child_move(g_mem, event.actor, exit_data.to_ref) or_return
-	try_look(g_mem, Ev_Look{actor = event.actor, room = exit_data.to_ref}) or_return
+	try_look(g_mem, Event{type = .Ev_Look, actor = event.actor, room = exit_data.to_ref}) or_return
 	return true
 }
 
@@ -92,38 +92,33 @@ publish :: proc(g_mem: ^GameMem, topic: Ch_Topic, ref: Ref, msg: string) -> bool
 	return true
 }
 
-try_say :: proc(g_mem: ^GameMem, event: Ev_Say) -> bool {
-	self_id := deref(g_mem, event.speaker) or_return
+try_say :: proc(g_mem: ^GameMem, event: Event) -> bool {
+	self_id := deref(g_mem, event.actor) or_return
 	show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
 
 	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
 		// p1 = 1st person
-		p1_msg := fmt.tprintf("You say, \"{0}\"{1}", event.text, CRLF)
+		p1_msg := fmt.tprintf("You say, \"{0}\"{1}", event.args, CRLF)
 		output1(p1_msg, conn_pool[i].conn_ref)
 	}
 	// p3 = third person
-	p3_msg := fmt.tprintf("{0} says, \"{1}\"{2}", show.name, event.text, CRLF)
+	p3_msg := fmt.tprintf("{0} says, \"{1}\"{2}", show.name, event.args, CRLF)
 	room_id := deref(g_mem, event.room) or_return
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 	send_to_room(p3_msg, room_contents, {self_id})
 	return true
 }
 
-try_get :: proc(g_mem: ^GameMem, event: Ev_Get) -> bool {
+try_get :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, event.room) or_return
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 	anatomy := sparse_set_get_ptr(&g_mem.anatomy, self_id) or_return
-	item_id, item_show := find_1_in_room(
-		room_contents,
-		event.keywords,
-		self_id,
-		{.Portable},
-	) or_return
-	slot := carry_slot_get(anatomy.eq_slots[:]) or_return
+	item_id, item_show := find_1_in_room(room_contents, event.args, self_id, {.Portable}) or_return
+	slot := empty_carry_slot_get(anatomy.eq_slots[:]) or_return
 	// do get
-	child_rmv(g_mem, item_id)
 	item_ref := ref_get(g_mem, item_id) or_return
+	child_move(g_mem, item_ref, event.actor)
 	slot.equipped = item_ref
 	// output
 	actor_show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
@@ -134,6 +129,159 @@ try_get :: proc(g_mem: ^GameMem, event: Ev_Get) -> bool {
 	p3 := fmt.tprintf("{1} picks up {2}.{3}", actor_show.name, item_show.name, CRLF)
 	send_to_room(p3, room_contents, {self_id})
 	return true
+}
+
+try_drop :: proc(g_mem: ^GameMem, event: Event) -> bool {
+	self_id := deref(g_mem, event.actor) or_return
+	room_id := deref(g_mem, event.room) or_return
+	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, self_id) or_return
+	self_contents := sparse_set_get_ptr(&g_mem.hierarchy, self_id) or_return
+	anatomy := sparse_set_get_ptr(&g_mem.anatomy, self_id) or_return
+	item_id, item_show := find_1_in_room(self_contents, event.args) or_return
+	item_ref := ref_get(g_mem, item_id) or_return
+	// do drop
+	child_move(g_mem, item_ref, event.room)
+	for &slot in anatomy.eq_slots {
+		if slot.equipped == item_ref {
+			slot.equipped = {}
+			break
+		}
+	}
+	// output
+	actor_show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
+	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
+		p1 := fmt.tprintf("You drop {1}.{3}", item_show.name, CRLF)
+		output1(p1, conn_pool[i].conn_ref)
+	}
+	p3 := fmt.tprintf("{1} drops {2}.{3}", actor_show.name, item_show.name, CRLF)
+	send_to_room(p3, room_contents, {self_id})
+	return true
+}
+
+inventory :: proc(g_mem: ^GameMem, event: Event) -> bool {
+	self_id := deref(g_mem, event.actor) or_return
+	anatomy := sparse_set_get_ptr(&g_mem.anatomy, self_id) or_return
+	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
+		sb := string_builder(1024) or_return
+		for &slot in anatomy.eq_slots {
+			write_string(&sb, eq_slot_loc_to_string(slot.type))
+			if slot.equipped == {} {
+				write_string_ln(&sb, ": empty")
+				continue
+			}
+			item_id := deref(g_mem, slot.equipped) or_return
+			show := sparse_set_get_ptr(&g_mem.show, item_id) or_continue
+			write_string(&sb, ": ")
+			write_string_ln(&sb, show.name)
+		}
+		write_prompt(&sb, g_mem, self_id)
+		output1(strings.to_string(sb), conn_pool[i].conn_ref)
+	}
+	return true
+}
+
+eq_slot_loc_to_string :: proc(loc: Eq_Slot_Loc) -> string {
+	switch loc {
+	case .Eq_Main_Hand:
+		return "Main Hand"
+	}
+	return "err"
+}
+
+send_to_room :: proc(msg: string, room_contents: ^Hierarchy, except: []Id) {
+	players := make([dynamic]ConnRef, context.temp_allocator)
+	it := to_child_iter(room_contents.first_kid)
+	for child in next_child(&it) {
+		if slice.contains(except, child) do continue
+		if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, child); has_conn {
+			append(&players, conn_pool[i].conn_ref)
+		}
+	}
+	output_n(msg, players[:])
+}
+
+empty_carry_slot_get :: proc(slots: []Eq_Slot) -> (^Eq_Slot, bool) {
+	for &slot in slots {
+		// if the slot can pick up an item and is currently empty
+		if .Eq_Can_Carry in slot.flags && slot.equipped == {} {
+			return &slot, true
+		}
+	}
+	return nil, false
+}
+
+find_1_in_room :: proc(
+	room: ^Hierarchy,
+	keywords: string,
+	skip_id := Id(0),
+	filter: bit_set[Property] = {},
+	ordinal := 0,
+) -> (
+	id: Id,
+	show: ^Show,
+	ok: bool,
+) {
+	keyword_ids: [dynamic; 4]u16
+	assert(ordinal > 0)
+	ordinal := ordinal
+	terms := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids) or_return
+	it := to_child_iter(room.first_kid)
+	for child in next_child(&it) {
+		if !has_properties(g_mem, child, filter) || child == skip_id {
+			continue
+		}
+		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
+		if !show_ok || !keyword_match(terms, child_show.keyword[:]) {
+			continue
+		}
+		// skip keyword matches until the desired ordinal is reached
+		if ordinal > 0 {
+			ordinal -= 1
+			continue
+		}
+		return child, child_show, true
+	}
+	// not found!
+	return
+}
+
+find_n_in_room :: proc(
+	room: ^Hierarchy,
+	keywords: string,
+	skip_ids: []Id = {Id(0)},
+	filter: bit_set[Property] = {},
+	quantity := 1,
+	allocator := context.temp_allocator,
+) -> (
+	[]Id,
+	[]^Show,
+	bool,
+) {
+	keyword_ids: [dynamic; 4]u16
+	assert(quantity > 0)
+	found := make([dynamic]Id, quantity, allocator)
+	show_list := make([dynamic]^Show, quantity, allocator)
+	quantity := quantity
+	terms, is_ok := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids)
+	if !is_ok do return {}, {}, false
+	it := to_child_iter(room.first_kid)
+	for child in next_child(&it) {
+		// skip keyword matches until the desired ordinal is reached
+		if quantity <= 0 {
+			break
+		}
+		if !has_properties(g_mem, child, filter) || slice.contains(skip_ids, child) {
+			continue
+		}
+		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
+		if !show_ok || !keyword_match(terms, child_show.keyword[:]) {
+			continue
+		}
+		append(&found, child)
+		append(&show_list, child_show)
+		quantity -= 1
+	}
+	return found[:], show_list[:], len(found) > 0
 }
 
 write_exits :: proc(sb: ^strings.Builder, g_mem: ^GameMem, exits: ^Exitable, observer: Id) {
@@ -217,104 +365,6 @@ string_builder :: #force_inline proc(
 	return sb, err == nil
 }
 
-send_to_room :: proc(msg: string, room_contents: ^Hierarchy, except: []Id) {
-	players := make([dynamic]ConnRef, context.temp_allocator)
-	it := to_child_iter(room_contents.first_kid)
-	for child in next_child(&it) {
-		if slice.contains(except, child) do continue
-		if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, child); has_conn {
-			append(&players, conn_pool[i].conn_ref)
-		}
-	}
-	output_n(msg, players[:])
-}
-
-carry_slot_get :: proc(slots: []Eq_Slot) -> (^Eq_Slot, bool) {
-	for &slot in slots {
-		// if the slot can pick up an item and is currently empty
-		if .Eq_Can_Carry in slot.flags && slot.equipped == {} {
-			return &slot, true
-		}
-	}
-	return nil, false
-}
-
-// find in the room via a keyword search
-find_1_in_room :: proc(
-	room: ^Hierarchy,
-	keywords: string,
-	skip_id := Id(0),
-	filter: bit_set[Property] = {},
-	ordinal := 0,
-) -> (
-	id: Id,
-	show: ^Show,
-	ok: bool,
-) {
-	keyword_ids: [dynamic; 4]u16
-	assert(ordinal > 0)
-	ordinal := ordinal
-	terms := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids) or_return
-	it := to_child_iter(room.first_kid)
-	for child in next_child(&it) {
-		if !has_properties(g_mem, child, filter) || child == skip_id {
-			continue
-		}
-		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
-		if !show_ok || !keyword_match(terms, child_show.keyword[:]) {
-			continue
-		}
-		// skip keyword matches until the desired ordinal is reached
-		if ordinal > 0 {
-			ordinal -= 1
-			continue
-		}
-		return child, child_show, true
-	}
-	// not found!
-	return
-}
-
-// find in the room via a keyword search
-find_n_in_room :: proc(
-	room: ^Hierarchy,
-	keywords: string,
-	skip_ids: []Id = {Id(0)},
-	filter: bit_set[Property] = {},
-	quantity := 1,
-	allocator := context.temp_allocator,
-) -> (
-	[]Id,
-	[]^Show,
-	bool,
-) {
-	keyword_ids: [dynamic; 4]u16
-	assert(quantity > 0)
-	found := make([dynamic]Id, quantity, allocator)
-	show_list := make([dynamic]^Show, quantity, allocator)
-	quantity := quantity
-	terms, is_ok := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids)
-	if !is_ok do return {}, {}, false
-	it := to_child_iter(room.first_kid)
-	for child in next_child(&it) {
-		// skip keyword matches until the desired ordinal is reached
-		if quantity <= 0 {
-			break
-		}
-		if !has_properties(g_mem, child, filter) || slice.contains(skip_ids, child) {
-			continue
-		}
-		child_show, show_ok := sparse_set_get_ptr(&g_mem.show, child)
-		if !show_ok || !keyword_match(terms, child_show.keyword[:]) {
-			continue
-		}
-		append(&found, child)
-		append(&show_list, child_show)
-		quantity -= 1
-	}
-	return found[:], show_list[:], len(found) > 0
-}
-
 Msg_Target :: enum {
 	To_Char,
 	To_Vict,
@@ -322,26 +372,24 @@ Msg_Target :: enum {
 	To_Room,
 }
 
-act2 :: proc(
+act :: proc(
 	template: string,
 	char: Id,
 	vict: Id,
 	room_contents: ^Hierarchy,
 	type: Msg_Target,
 	payload: Msg_Payload,
-) {
+) -> bool {
 	switch type {
 	case .To_Char:
 		if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, char); has_conn {
-			msg, ok := expand_tokens(template, payload)
-			if !ok do return
+			msg := expand_tokens(template, payload) or_return
 			output1(msg, conn_pool[i].conn_ref)
 		}
 
 	case .To_Vict:
 		if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, vict); has_conn {
-			msg, ok := expand_tokens(template, payload)
-			if !ok do return
+			msg := expand_tokens(template, payload) or_return
 			output1(msg, conn_pool[i].conn_ref)
 		}
 
@@ -357,11 +405,12 @@ act2 :: proc(
 			}
 		}
 
-		if len(players[:]) == 0 do return
-		msg, ok := expand_tokens(template, payload)
-		if !ok do return
+		if len(players[:]) == 0 do return false
+		msg := expand_tokens(template, payload) or_return
 		output_n(msg, players[:])
 	}
+
+	return true
 }
 
 expand_tokens :: proc(

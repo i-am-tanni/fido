@@ -192,40 +192,22 @@ Child_Iter :: struct {
 /// Event Types
 ///
 
-Event :: union {
+Ev_Type :: enum {
 	Ev_Look,
 	Ev_Look_At,
 	Ev_Say,
 	Ev_Move,
 	Ev_Get,
+	Ev_Drop,
+	Ev_Inventory,
 }
 
-Ev_Look :: struct {
-	actor: Ref,
-	room:  Ref,
-}
-
-Ev_Look_At :: struct {
-	actor:    Ref,
-	room:     Ref,
-	keywords: string,
-}
-
-Ev_Say :: struct {
-	speaker: Ref,
-	room:    Ref,
-	text:    string,
-}
-
-Ev_Move :: struct {
+Event :: struct {
+	type:         Ev_Type,
 	actor:        Ref,
+	room:         Ref,
+	args:         string,
 	exit_keyword: Direction,
-}
-
-Ev_Get :: struct {
-	actor:    Ref,
-	room:     Ref,
-	keywords: string,
 }
 
 @(export)
@@ -243,6 +225,7 @@ game_init :: proc(channels: shared.Channels) {
 	sparse_set_init(&g_mem.exit, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	sparse_set_init(&g_mem.portable, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	soa_pool_init(&g_mem.player, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
+	sparse_set_init(&g_mem.anatomy, max_id = MAX_ENTITY_ID, dense_cap = MAX_ENTITY_ID)
 	g_mem.parent = make([dynamic]Ref, MAX_ENTITY_ID, MAX_ENTITY_ID)
 
 	g_mem.keyword = make(map[string]u16)
@@ -301,7 +284,7 @@ game_update :: proc() -> bool {
 			// update game ref
 			update_game_ref(event.conn_ref, ref)
 			child_prepend(g_mem, SPAWN_ROOM, ref)
-			try_look(g_mem, Ev_Look{actor = ref, room = SPAWN_ROOM})
+			try_look(g_mem, Event{type = .Ev_Look, actor = ref, room = SPAWN_ROOM})
 
 		case .Disconnect:
 			fmt.println("Disconnected!")
@@ -344,17 +327,21 @@ game_hot_reloaded :: proc(mem: ^GameMem, channels: shared.Channels) {
 process_game_events :: proc(g_mem: ^GameMem) {
 	for {
 		event := queue.pop_front_safe(&g_mem.event_queue) or_break
-		switch val in event {
-		case Ev_Look:
-			try_look(g_mem, val)
-		case Ev_Move:
-			try_move(g_mem, val)
-		case Ev_Look_At:
-			try_look_at(g_mem, val)
-		case Ev_Say:
-			try_say(g_mem, val)
-		case Ev_Get:
-			try_get(g_mem, val)
+		switch event.type {
+		case .Ev_Look:
+			try_look(g_mem, event)
+		case .Ev_Move:
+			try_move(g_mem, event)
+		case .Ev_Look_At:
+			try_look_at(g_mem, event)
+		case .Ev_Say:
+			try_say(g_mem, event)
+		case .Ev_Get:
+			try_get(g_mem, event)
+		case .Ev_Inventory:
+			inventory(g_mem, event)
+		case .Ev_Drop:
+			try_drop(g_mem, event)
 		}
 	}
 }

@@ -24,6 +24,9 @@ ParsedCommand :: enum {
 	Cmd_Look_At,
 	Cmd_Say,
 	Cmd_Chat,
+	Cmd_Inventory,
+	Cmd_Get,
+	Cmd_Drop,
 }
 
 process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
@@ -41,49 +44,78 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 	ev: Event = ---
 	switch parsed.command {
 	case .Cmd_Look:
-		ev = Ev_Look {
+		ev = Event {
+			type  = .Ev_Look,
 			actor = input.game_ref,
 			room  = g_mem.parent[self_id],
 		}
 
 	case .Cmd_Go_North:
-		ev = Ev_Move {
+		ev = Event {
+			type         = .Ev_Move,
 			actor        = input.game_ref,
 			exit_keyword = .Dir_North,
 		}
 	case .Cmd_Go_South:
-		ev = Ev_Move {
+		ev = Event {
+			type         = .Ev_Move,
 			actor        = input.game_ref,
 			exit_keyword = .Dir_South,
 		}
 	case .Cmd_Go_East:
-		ev = Ev_Move {
+		ev = Event {
+			type         = .Ev_Move,
 			actor        = input.game_ref,
 			exit_keyword = .Dir_East,
 		}
 	case .Cmd_Go_West:
-		ev = Ev_Move {
+		ev = Event {
+			type         = .Ev_Move,
 			actor        = input.game_ref,
 			exit_keyword = .Dir_West,
 		}
 
 	case .Cmd_Say:
 		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-		ev = Ev_Say {
-			speaker = input.game_ref,
-			room    = g_mem.parent[self_id],
-			text    = parsed.args,
+		ev = Event {
+			type  = .Ev_Say,
+			actor = input.game_ref,
+			room  = g_mem.parent[self_id],
+			args  = parsed.args,
 		}
 	case .Cmd_Look_At:
 		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
-		ev = Ev_Look_At {
-			actor    = input.game_ref,
-			room     = g_mem.parent[self_id],
-			keywords = parsed.args,
+		ev = Event {
+			type  = .Ev_Look_At,
+			actor = input.game_ref,
+			room  = g_mem.parent[self_id],
+			args  = parsed.args,
 		}
 
 	case .Cmd_Chat:
 		try_chat(g_mem, input, parsed.args)
+
+	case .Cmd_Get:
+		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+		ev = Event {
+			type  = .Ev_Get,
+			actor = input.game_ref,
+			room  = g_mem.parent[self_id],
+			args  = parsed.args,
+		}
+	case .Cmd_Drop:
+		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
+		ev = Event {
+			type  = .Ev_Drop,
+			actor = input.game_ref,
+			room  = g_mem.parent[self_id],
+			args  = parsed.args,
+		}
+	case .Cmd_Inventory:
+		ev = Event {
+			type  = .Ev_Inventory,
+			actor = input.game_ref,
+		}
 	}
 
 	queue.push_back(&g_mem.event_queue, ev)
@@ -124,6 +156,12 @@ str_to_command :: proc(text: string) -> (command: ParsedCommand, ok: bool) {
 			return .Cmd_Go_West, true
 		case 'c':
 			return .Cmd_Chat, true
+		case 'i':
+			return .Cmd_Inventory, true
+		case 'g':
+			return .Cmd_Get, true
+		case 'd':
+			return .Cmd_Drop, true
 		case:
 			return
 		}
