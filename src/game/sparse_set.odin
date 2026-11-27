@@ -76,6 +76,7 @@ soa_pool_init :: proc(
 }
 
 sparse_set_get_ptr :: proc(sparse_set: ^SparseSet($T), id: Id) -> (slot: ^T, is_ok: bool) {
+	assert(int(id) < len(sparse_set.sparse))
 	idx := sparse_set.sparse[id]
 	if idx == 0 do return
 	return &sparse_set.dense[idx], true

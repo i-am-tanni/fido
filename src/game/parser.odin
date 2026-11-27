@@ -76,7 +76,6 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 		}
 
 	case .Cmd_Say:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Event {
 			type  = .Ev_Say,
 			actor = input.game_ref,
@@ -84,7 +83,6 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 			args  = parsed.args,
 		}
 	case .Cmd_Look_At:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Event {
 			type  = .Ev_Look_At,
 			actor = input.game_ref,
@@ -96,7 +94,6 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 		try_chat(g_mem, input, parsed.args)
 
 	case .Cmd_Get:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Event {
 			type  = .Ev_Get,
 			actor = input.game_ref,
@@ -104,7 +101,6 @@ process_command :: proc(g_mem: ^GameMem, input: NetworkEvent) -> bool {
 			args  = parsed.args,
 		}
 	case .Cmd_Drop:
-		room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 		ev = Event {
 			type  = .Ev_Drop,
 			actor = input.game_ref,
@@ -169,7 +165,7 @@ str_to_command :: proc(text: string) -> (command: ParsedCommand, ok: bool) {
 
 	switch (text[0]) {
 	case 'l':
-		if text == "l" || text == "look" {
+		if text == "look" {
 			return .Cmd_Look_At, true
 		}
 	case 'c':

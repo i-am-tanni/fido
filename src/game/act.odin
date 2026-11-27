@@ -123,10 +123,10 @@ try_get :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	// output
 	actor_show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
 	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
-		p1 := fmt.tprintf("You pick up {1}.{3}", item_show.name, CRLF)
+		p1 := fmt.tprintf("You pick up %s.%s", item_show.name, CRLF)
 		output1(p1, conn_pool[i].conn_ref)
 	}
-	p3 := fmt.tprintf("{1} picks up {2}.{3}", actor_show.name, item_show.name, CRLF)
+	p3 := fmt.tprintf("{0} picks up {1}.{2}", actor_show.name, item_show.name, CRLF)
 	send_to_room(p3, room_contents, {self_id})
 	return true
 }
@@ -150,10 +150,10 @@ try_drop :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	// output
 	actor_show := sparse_set_get_ptr(&g_mem.show, self_id) or_return
 	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
-		p1 := fmt.tprintf("You drop {1}.{3}", item_show.name, CRLF)
+		p1 := fmt.tprintf("You drop {0}.{1}", item_show.name, CRLF)
 		output1(p1, conn_pool[i].conn_ref)
 	}
-	p3 := fmt.tprintf("{1} drops {2}.{3}", actor_show.name, item_show.name, CRLF)
+	p3 := fmt.tprintf("{0} drops {1}.{2}", actor_show.name, item_show.name, CRLF)
 	send_to_room(p3, room_contents, {self_id})
 	return true
 }
@@ -171,8 +171,7 @@ inventory :: proc(g_mem: ^GameMem, event: Event) -> bool {
 			}
 			item_id := deref(g_mem, slot.equipped) or_return
 			show := sparse_set_get_ptr(&g_mem.show, item_id) or_continue
-			write_string(&sb, ": ")
-			write_string_ln(&sb, show.name)
+			sbprintfcrlf(&sb, ": %s", show.name)
 		}
 		write_prompt(&sb, g_mem, self_id)
 		output1(strings.to_string(sb), conn_pool[i].conn_ref)
@@ -221,10 +220,10 @@ find_1_in_room :: proc(
 	show: ^Show,
 	ok: bool,
 ) {
-	keyword_ids: [dynamic; 4]u16
-	assert(ordinal > 0)
+	keyword_ids: [4]u16
+	assert(ordinal >= 0)
 	ordinal := ordinal
-	terms := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids) or_return
+	terms := string_to_kw_ids(&g_mem.keyword, keywords, keyword_ids[:]) or_return
 	it := to_child_iter(room.first_kid)
 	for child in next_child(&it) {
 		if !has_properties(g_mem, child, filter) || child == skip_id {
@@ -262,7 +261,7 @@ find_n_in_room :: proc(
 	found := make([dynamic]Id, quantity, allocator)
 	show_list := make([dynamic]^Show, quantity, allocator)
 	quantity := quantity
-	terms, is_ok := string_to_kw_ids(&g_mem.keyword, keywords, &keyword_ids)
+	terms, is_ok := string_to_kw_ids(&g_mem.keyword, keywords, keyword_ids[:])
 	if !is_ok do return {}, {}, false
 	it := to_child_iter(room.first_kid)
 	for child in next_child(&it) {
@@ -474,4 +473,9 @@ expand_tokens :: proc(
 
 	strings.write_string(&sb, CRLF)
 	return strings.to_string(sb), true
+}
+
+sbprintfcrlf :: proc(buf: ^strings.Builder, format: string, args: ..any) {
+	fmt.sbprintf(buf, format, ..args)
+	strings.write_string(buf, "\r\n")
 }

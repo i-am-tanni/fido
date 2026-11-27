@@ -189,7 +189,7 @@ Child_Iter :: struct {
 
 
 ///
-/// Event Types
+/// Events
 ///
 
 Ev_Type :: enum {
@@ -249,6 +249,16 @@ game_init :: proc(channels: shared.Channels) {
 		g_mem,
 		Room{name = "South Room", long = "It's cold down here.", short = "", id = 2},
 	)
+	ref3 := item_new(
+		g_mem,
+		Show {
+			keyword = {keyword_insert("test"), keyword_insert("item")},
+			name = "a test item",
+			short = "a test item rests here.",
+			long = "The test item is shiny.",
+		},
+	)
+	child_append(g_mem, ref1, ref3)
 	exit_add(&g_mem.exit, ref1.id, ExitData{to_ref = ref2, direction = .Dir_South})
 	exit_add(&g_mem.exit, ref2.id, ExitData{to_ref = ref1, direction = .Dir_North})
 }
@@ -740,6 +750,16 @@ room_new :: proc(g_mem: ^GameMem, room: Room) -> Ref {
 	return ref
 }
 
+item_new :: proc(g_mem: ^GameMem, show: Show) -> Ref {
+	ref := entity_new_assign_id(g_mem)
+	hierarchy := hierarchy_new(g_mem^)
+	hierarchy.ref = ref
+	prop_add(g_mem, ref, hierarchy)
+	prop_add(g_mem, ref, show)
+	prop_add(g_mem, ref, Portable{})
+	return ref
+}
+
 player_new :: proc(g_mem: ^GameMem, player: Player) -> Ref {
 	ref := entity_new_assign_id(g_mem)
 	hierarchy := hierarchy_new(g_mem^)
@@ -772,7 +792,7 @@ update_game_ref :: #force_inline proc(conn_ref: ConnRef, game_ref: Ref) {
 }
 
 keyword_insert :: proc(kw: string) -> u16 {
-	keyword := g_mem.keyword
+	keyword := &g_mem.keyword
 	if id, ok := keyword[kw]; ok {
 		return id
 	}
@@ -808,21 +828,23 @@ keyword_match :: proc(search_terms: []u16, in_keywords: []u16) -> bool {
 string_to_kw_ids :: proc(
 	lookup: ^map[string]u16,
 	s: string,
-	list: ^[dynamic; 4]u16,
-	allocator: runtime.Allocator = context.temp_allocator,
+	list: []u16,
+	allocator := context.temp_allocator,
 ) -> (
-	slice: []u16,
-	keyword_ids_found: bool,
+	[]u16,
+	bool,
 ) {
-	split, alloc_err := strings.fields(s, allocator)
-	assert(alloc_err == nil)
+	i := 0
+	s := s
+
 	// convert keywords to lookup ids
-	for kw in split {
-		if len(list) == cap(list) do break
-		id := lookup[kw] or_continue
-		append(list, id)
+	for word in strings.fields_iterator(&s) {
+		if i >= len(list) do break
+		id := lookup[word] or_continue
+		list[i] = id
+		i += 1
 	}
-	return list[:], len(list) > 0
+	return list[:i], i > 0
 }
 
 to_child_iter :: proc(
