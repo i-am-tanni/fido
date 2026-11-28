@@ -52,7 +52,7 @@ try_look_at :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	self_id := deref(g_mem, event.actor) or_return
 	room_id := deref(g_mem, g_mem.parent[self_id]) or_return
 	contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
-	_, show, found := find_1_in_room(contents, event.args)
+	_, show, found := find_1(contents, event.args)
 	// output to connection if available
 	if conn_pool, i, has_conn := soa_pool_get(&g_mem.player, self_id); has_conn {
 		sb := string_builder(4096) or_return
@@ -114,7 +114,7 @@ try_get :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	room_id := deref(g_mem, event.room) or_return
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, room_id) or_return
 	anatomy := sparse_set_get_ptr(&g_mem.anatomy, self_id) or_return
-	item_id, item_show := find_1_in_room(room_contents, event.args, self_id, {.Portable}) or_return
+	item_id, item_show := find_1(room_contents, event.args, self_id, {.Portable}) or_return
 	slot := empty_carry_slot_get(anatomy.eq_slots[:]) or_return
 	// do get
 	item_ref := ref_get(g_mem, item_id) or_return
@@ -137,7 +137,7 @@ try_drop :: proc(g_mem: ^GameMem, event: Event) -> bool {
 	room_contents := sparse_set_get_ptr(&g_mem.hierarchy, self_id) or_return
 	self_contents := sparse_set_get_ptr(&g_mem.hierarchy, self_id) or_return
 	anatomy := sparse_set_get_ptr(&g_mem.anatomy, self_id) or_return
-	item_id, item_show := find_1_in_room(self_contents, event.args) or_return
+	item_id, item_show := find_1(self_contents, event.args) or_return
 	item_ref := ref_get(g_mem, item_id) or_return
 	// do drop
 	child_move(g_mem, item_ref, event.room)
@@ -209,7 +209,7 @@ empty_carry_slot_get :: proc(slots: []Eq_Slot) -> (^Eq_Slot, bool) {
 	return nil, false
 }
 
-find_1_in_room :: proc(
+find_1 :: proc(
 	room: ^Hierarchy,
 	keywords: string,
 	skip_id := Id(0),
@@ -244,7 +244,7 @@ find_1_in_room :: proc(
 	return
 }
 
-find_n_in_room :: proc(
+find_n :: proc(
 	room: ^Hierarchy,
 	keywords: string,
 	skip_ids: []Id = {Id(0)},
@@ -256,7 +256,7 @@ find_n_in_room :: proc(
 	[]^Show,
 	bool,
 ) {
-	keyword_ids: [dynamic; 4]u16
+	keyword_ids: [4]u16
 	assert(quantity > 0)
 	found := make([dynamic]Id, quantity, allocator)
 	show_list := make([dynamic]^Show, quantity, allocator)
